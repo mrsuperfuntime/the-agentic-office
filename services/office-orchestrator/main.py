@@ -1345,20 +1345,36 @@ async def list_offices(_guard: None = Depends(metadata_guard)):
 @app.get("/integrations/status")
 async def get_integration_status(_guard: None = Depends(metadata_guard)):
     """Return merged IT integration catalog with current linked status."""
+    error_details: list[str] = []
     async with httpx.AsyncClient() as client:
         try:
             catalog_response = await client.get(f"{OFFICES['it']}/integrations/catalog", timeout=10.0)
             links_response = await client.get(f"{OFFICES['it']}/integrations", timeout=10.0)
         except Exception as e:
-            raise HTTPException(status_code=502, detail=f"Failed to reach IT office: {str(e)}")
+            error_details.append(f"Failed to reach IT office: {str(e)}")
+            catalog_response = None
+            links_response = None
 
-    if catalog_response.status_code != 200:
-        raise HTTPException(status_code=502, detail="Failed to load IT integration catalog")
-    if links_response.status_code != 200:
-        raise HTTPException(status_code=502, detail="Failed to load IT integration links")
+    if catalog_response is not None and catalog_response.status_code != 200:
+        error_details.append("Failed to load IT integration catalog")
+    if links_response is not None and links_response.status_code != 200:
+        error_details.append("Failed to load IT integration links")
 
-    catalog_payload = catalog_response.json() if catalog_response.headers.get("content-type", "").startswith("application/json") else {}
-    links_payload = links_response.json() if links_response.headers.get("content-type", "").startswith("application/json") else {}
+    catalog_payload = {}
+    if (
+        catalog_response is not None
+        and catalog_response.status_code == 200
+        and catalog_response.headers.get("content-type", "").startswith("application/json")
+    ):
+        catalog_payload = catalog_response.json()
+
+    links_payload = {}
+    if (
+        links_response is not None
+        and links_response.status_code == 200
+        and links_response.headers.get("content-type", "").startswith("application/json")
+    ):
+        links_payload = links_response.json()
 
     catalog = catalog_payload.get("catalog") or {}
     linked = links_payload.get("integrations") or {}
@@ -1392,11 +1408,12 @@ async def get_integration_status(_guard: None = Depends(metadata_guard)):
         )
 
     return {
-        "status": "success",
+        "status": "degraded" if error_details else "success",
         "connections": connections,
         "linked_count": len(linked),
         "catalog_count": len(catalog),
         "default_publish_targets": links_payload.get("default_publish_targets") or [],
+        "errors": error_details,
     }
 
 

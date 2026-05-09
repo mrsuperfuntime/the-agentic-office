@@ -1168,77 +1168,6 @@
             border: 1px solid #d1d5db;
         }
 
-        .message-title {
-            font-size: 1.05em;
-            font-weight: 700;
-            color: #1e293b;
-            margin-bottom: 12px;
-        }
-
-        .message-form {
-            display: grid;
-            gap: 10px;
-        }
-
-        .message-form label {
-            font-size: 0.85em;
-            font-weight: 600;
-            color: #334155;
-        }
-
-        .message-form select,
-        .message-form textarea {
-            width: 100%;
-            border: 1px solid #cbd5e1;
-            border-radius: 8px;
-            padding: 10px;
-            font-size: 0.95em;
-            background: #fff;
-        }
-
-        .message-form textarea {
-            min-height: 88px;
-            resize: vertical;
-        }
-
-        .message-actions {
-            display: flex;
-            gap: 8px;
-            align-items: center;
-        }
-
-        .send-btn {
-            border: none;
-            border-radius: 8px;
-            padding: 10px 14px;
-            background: #1d4ed8;
-            color: #fff;
-            font-weight: 600;
-            cursor: pointer;
-            transition: background 0.2s ease;
-        }
-
-        .send-btn:hover {
-            background: #1e40af;
-        }
-
-        .send-btn:disabled {
-            cursor: not-allowed;
-            opacity: 0.65;
-        }
-
-        .message-result {
-            margin-top: 10px;
-            border: 1px solid #e2e8f0;
-            border-radius: 8px;
-            background: #fff;
-            padding: 10px;
-            font-size: 0.9em;
-            color: #1f2937;
-            white-space: pre-wrap;
-            display: none;
-        }
-
         .message-result-panel {
             display: grid;
             gap: 10px;
@@ -1720,11 +1649,6 @@
             height: 100%;
             background-color: rgba(0, 0, 0, 0.5);
             animation: fadeIn 0.3s ease;
-        }
-
-        @keyframes fadeIn {
-            from { opacity: 0; }
-            to { opacity: 1; }
         }
 
         .modal-content {
@@ -3035,6 +2959,10 @@
         let connectionsData = [];
         let defaultPublishTargetsData = [];
         let _lastOfficeRenderSignature = '';
+        let _lastConnectionsRenderSignature = '';
+        let _lastIntegrationErrorMessage = '';
+        let _lastIntegrationErrorAt = 0;
+        let _statusPollTimer = null;
         const _queueCache = {
             floor3: null,
             gamma: null,
@@ -3735,8 +3663,19 @@
         }
 
         function renderConnections(connections, defaultTargets) {
-            connectionsData = Array.isArray(connections) ? connections : [];
-            defaultPublishTargetsData = Array.isArray(defaultTargets) ? defaultTargets : [];
+            const normalizedConnections = Array.isArray(connections) ? connections : [];
+            const normalizedTargets = Array.isArray(defaultTargets) ? defaultTargets : [];
+            const nextSignature = JSON.stringify({
+                connections: normalizedConnections,
+                targets: normalizedTargets,
+            });
+            if (nextSignature === _lastConnectionsRenderSignature) {
+                return;
+            }
+
+            _lastConnectionsRenderSignature = nextSignature;
+            connectionsData = normalizedConnections;
+            defaultPublishTargetsData = normalizedTargets;
             renderConnectionsPanel(connectionsSummary, connectionsGrid, connectionsEmpty, connectionsData, defaultPublishTargetsData);
             renderITModalConnections();
         }
@@ -3746,7 +3685,10 @@
                 return;
             }
 
-            connectionsSummary.textContent = 'Loading integration connections...';
+            const hasCachedConnections = Array.isArray(connectionsData) && connectionsData.length > 0;
+            if (!hasCachedConnections) {
+                connectionsSummary.textContent = 'Loading integration connections...';
+            }
             try {
                 const response = await fetch(`${API_BASE}/integrations/status`, {
                     headers: authHeaders()
@@ -3757,16 +3699,38 @@
                 }
 
                 renderConnections(payload.connections || [], payload.default_publish_targets || []);
+                const statusLabel = payload.status === 'degraded' ? 'degraded' : 'healthy';
+                const details = Array.isArray(payload.errors) && payload.errors.length
+                    ? ` (${payload.errors[0]})`
+                    : '';
+                connectionsSummary.textContent = `Integration status: ${statusLabel}${details}`;
+                _lastIntegrationErrorMessage = '';
+                _lastIntegrationErrorAt = 0;
             } catch (error) {
-                connectionsGrid.innerHTML = '';
-                connectionsEmpty.style.display = 'block';
-                connectionsSummary.textContent = error.message || 'Integration status unavailable.';
+                const nextErrorMessage = error.message || 'Integration status unavailable.';
+                const now = Date.now();
+                const shouldLogError =
+                    nextErrorMessage !== _lastIntegrationErrorMessage
+                    || now - _lastIntegrationErrorAt > 60000;
+                if (shouldLogError) {
+                    console.warn('Integration status check failed:', nextErrorMessage);
+                    _lastIntegrationErrorMessage = nextErrorMessage;
+                    _lastIntegrationErrorAt = now;
+                }
+
+                if (!hasCachedConnections) {
+                    connectionsGrid.innerHTML = '';
+                    connectionsEmpty.style.display = 'block';
+                }
+                connectionsSummary.textContent = `Integration status unavailable: ${nextErrorMessage}`;
                 const summaryElement = document.getElementById('itModalConnectionsSummary');
                 const gridElement = document.getElementById('itModalConnectionsGrid');
                 const emptyElement = document.getElementById('itModalConnectionsEmpty');
                 if (summaryElement && gridElement && emptyElement) {
-                    gridElement.innerHTML = '';
-                    emptyElement.style.display = 'block';
+                    if (!hasCachedConnections) {
+                        gridElement.innerHTML = '';
+                        emptyElement.style.display = 'block';
+                    }
                     summaryElement.textContent = connectionsSummary.textContent;
                 }
             }
@@ -4979,16 +4943,35 @@
             renderHistoryForSelectedOffice();
         });
 
-        // Refresh dispatch log and integration connections periodically
-        const _statusCheckInterval = setInterval(async () => {
+        // Refresh dispatch log and integration connections periodically, with hidden-tab throttling.
+        async function runStatusPollLoop() {
+            if (document.hidden) {
+                _statusPollTimer = window.setTimeout(runStatusPollLoop, 30000);
+                return;
+            }
             try {
-                refreshDispatchLog();
-                loadIntegrationConnections();
+                await refreshDispatchLog();
+                await loadIntegrationConnections();
             } catch (error) {
                 console.log('Status check:', error);
             }
-        }, 8000);
-        window.addEventListener('beforeunload', () => clearInterval(_statusCheckInterval));
+            _statusPollTimer = window.setTimeout(runStatusPollLoop, 8000);
+        }
+
+        _statusPollTimer = window.setTimeout(runStatusPollLoop, 8000);
+        document.addEventListener('visibilitychange', () => {
+            if (!document.hidden) {
+                if (_statusPollTimer) {
+                    window.clearTimeout(_statusPollTimer);
+                }
+                _statusPollTimer = window.setTimeout(runStatusPollLoop, 250);
+            }
+        });
+        window.addEventListener('beforeunload', () => {
+            if (_statusPollTimer) {
+                window.clearTimeout(_statusPollTimer);
+            }
+        });
 
         // Worker Management Functions
         const WORKER_STORAGE_KEY = 'agentic-office-workers';
