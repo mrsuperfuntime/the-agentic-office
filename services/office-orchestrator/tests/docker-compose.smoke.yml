@@ -1,0 +1,34 @@
+services:
+  postgres:
+    ports:
+      - "15432:5432"
+
+  finance-office:
+    build:
+      context: ../../..
+      dockerfile: services/finance-office/Dockerfile.smoke
+    ports:
+      - "18005:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://admin:admin@postgres:5432/agentic_office
+      SERVICE_NAME: finance-office
+      GROQ_API_KEY: smoke-test-key
+
+  office-orchestrator:
+    ports:
+      - "18000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      finance-office:
+        condition: service_started
+    environment:
+      DATABASE_URL: postgresql://admin:admin@postgres:5432/agentic_office
+      ORCHESTRATOR_API_KEY: smoke-test-key
+      ORCHESTRATOR_MESSAGE_RATE_LIMIT: 30
+      ORCHESTRATOR_DISPATCH_RATE_LIMIT: 60
+      ORCHESTRATOR_REQUEST_RATE_LIMIT: 60
+      ORCHESTRATOR_RATE_WINDOW_SECONDS: 60

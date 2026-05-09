@@ -1,0 +1,14 @@
+{
+  "x": {
+    "account_name": "agentic-x",
+    "credential_ref": "vault://x-token",
+    "linked_at": "2026-05-09T13:33:53.434125",
+    "status": "linked"
+  },
+  "instagram": {
+    "account_name": "agentic-ig",
+    "credential_ref": "vault://ig-token",
+    "linked_at": "2026-05-09T13:33:53.434764",
+    "status": "linked"
+  }
+}

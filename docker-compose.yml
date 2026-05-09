@@ -1,0 +1,225 @@
+version: '3.8'
+
+services:
+  # Central message broker
+  rabbitmq:
+    image: rabbitmq:3.12-management
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER:-agentic}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS:?set in .env}
+    healthcheck:
+      test: rabbitmq-diagnostics -q ping
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  # Shared databases
+  postgres:
+    image: postgres:15
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-agentic}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-agentic_office}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-agentic}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Office Orchestrator
+  office-orchestrator:
+    build:
+      context: ./services/office-orchestrator
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    environment:
+      RABBITMQ_URL: ${RABBITMQ_URL:?set in .env}
+      DATABASE_URL: ${DATABASE_URL:?set in .env}
+      ORCHESTRATOR_API_KEY: ${ORCHESTRATOR_API_KEY:?set in .env}
+      ENVIRONMENT: ${ENVIRONMENT:-development}
+      ORCHESTRATOR_CORS_ALLOWED_ORIGINS: ${ORCHESTRATOR_CORS_ALLOWED_ORIGINS:-http://localhost:8000,http://127.0.0.1:8000}
+      ORCHESTRATOR_MESSAGE_RATE_LIMIT: 60
+      ORCHESTRATOR_DISPATCH_RATE_LIMIT: 120
+      ORCHESTRATOR_REQUEST_RATE_LIMIT: 120
+      ORCHESTRATOR_RATE_WINDOW_SECONDS: 60
+    networks:
+      - agentic_network
+
+  # Sales Office
+  sales-office:
+    build:
+      context: ./services/sales-office
+      dockerfile: Dockerfile
+    ports:
+      - "8001:8000"
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    environment:
+      RABBITMQ_URL: ${RABBITMQ_URL:?set in .env}
+      DATABASE_URL: ${DATABASE_URL:?set in .env}
+      SERVICE_NAME: sales-office
+    networks:
+      - agentic_network
+
+  # HR Office
+  hr-office:
+    build:
+      context: ./services/hr-office
+      dockerfile: Dockerfile
+    ports:
+      - "8002:8000"
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    environment:
+      RABBITMQ_URL: ${RABBITMQ_URL:?set in .env}
+      DATABASE_URL: ${DATABASE_URL:?set in .env}
+      SERVICE_NAME: hr-office
+    networks:
+      - agentic_network
+
+  # Customer Service Office
+  customer-service-office:
+    build:
+      context: ./services/customer-service-office
+      dockerfile: Dockerfile
+    ports:
+      - "8003:8000"
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    environment:
+      RABBITMQ_URL: ${RABBITMQ_URL:?set in .env}
+      DATABASE_URL: ${DATABASE_URL:?set in .env}
+      SERVICE_NAME: customer-service-office
+    networks:
+      - agentic_network
+
+  # Procurement Office
+  procurement-office:
+    build:
+      context: ./services/procurement-office
+      dockerfile: Dockerfile
+    ports:
+      - "8004:8000"
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    environment:
+      RABBITMQ_URL: ${RABBITMQ_URL:?set in .env}
+      DATABASE_URL: ${DATABASE_URL:?set in .env}
+      SERVICE_NAME: procurement-office
+    networks:
+      - agentic_network
+
+  # Finance Office
+  finance-office:
+    build:
+      context: ./services/finance-office
+      dockerfile: Dockerfile
+    ports:
+      - "8005:8000"
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    environment:
+      RABBITMQ_URL: ${RABBITMQ_URL:?set in .env}
+      DATABASE_URL: ${DATABASE_URL:?set in .env}
+      SERVICE_NAME: finance-office
+    networks:
+      - agentic_network
+
+  # Manufacturing Office
+  manufacturing-office:
+    build:
+      context: ./services/manufacturing-office
+      dockerfile: Dockerfile
+    ports:
+      - "8006:8000"
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    environment:
+      RABBITMQ_URL: ${RABBITMQ_URL:?set in .env}
+      DATABASE_URL: ${DATABASE_URL:?set in .env}
+      SERVICE_NAME: manufacturing-office
+    networks:
+      - agentic_network
+
+  # Social Media Office
+  social-media-office:
+    build:
+      context: ./services/social-media-office
+      dockerfile: Dockerfile
+    ports:
+      - "8007:8000"
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    environment:
+      RABBITMQ_URL: ${RABBITMQ_URL:?set in .env}
+      DATABASE_URL: ${DATABASE_URL:?set in .env}
+      SERVICE_NAME: social-media-office
+      IT_OFFICE_URL: ${IT_OFFICE_URL:-http://it-office:8000}
+      SOCIAL_MEDIA_OUTPUT_ROOT: /data-output/social-media
+    volumes:
+      - ./data-output:/data-output
+    networks:
+      - agentic_network
+
+  # IT Office
+  it-office:
+    build:
+      context: ./services/it-office
+      dockerfile: Dockerfile
+    ports:
+      - "8008:8000"
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    environment:
+      RABBITMQ_URL: ${RABBITMQ_URL:?set in .env}
+      DATABASE_URL: ${DATABASE_URL:?set in .env}
+      SERVICE_NAME: it-office
+      IT_OUTPUT_ROOT: /data-output/it-office
+    volumes:
+      - ./data-output:/data-output
+    networks:
+      - agentic_network
+
+volumes:
+  postgres_data:
+
+networks:
+  agentic_network:
+    driver: bridge

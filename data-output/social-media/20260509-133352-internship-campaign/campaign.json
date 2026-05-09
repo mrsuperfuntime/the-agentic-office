@@ -1,0 +1,15 @@
+{
+  "created_at": "2026-05-09T13:33:52.884293",
+  "instruction": "Create 3 posts for internship applications",
+  "post_count": 3,
+  "generated_posts": [
+    "Post A",
+    "Post B",
+    "Post C"
+  ],
+  "image_briefs": [
+    "Image Brief 1: clean brand visual for this post theme -> Post A",
+    "Image Brief 2: clean brand visual for this post theme -> Post B",
+    "Image Brief 3: clean brand visual for this post theme -> Post C"
+  ]
+}

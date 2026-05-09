@@ -1,0 +1,24 @@
+[
+  {
+    "post_number": 1,
+    "platforms": [
+      "x",
+      "instagram"
+    ],
+    "post_preview": "Post 1",
+    "published_at": "2026-05-09T13:33:53.435850",
+    "artifact_folder": "sample-folder",
+    "status": "queued"
+  },
+  {
+    "post_number": 2,
+    "platforms": [
+      "x",
+      "instagram"
+    ],
+    "post_preview": "Post 2",
+    "published_at": "2026-05-09T13:33:53.435850",
+    "artifact_folder": "sample-folder",
+    "status": "queued"
+  }
+]
