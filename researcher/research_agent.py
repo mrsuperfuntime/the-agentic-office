@@ -66,6 +66,10 @@ Tier definitions:
   MEDIUM (4-6):  one signal strong, other moderate
   LOW    (1-3):  weak demand or not printable
 
+For the meshy_prompt field: use the eBay listing's short_description and image context to write a
+specific, detailed Meshy AI prompt. Reference the actual object's shape, texture, color, style, and
+key visual details seen in the listing. More specific = better 3D model output.
+
 Respond ONLY with a valid JSON array, highest score first — no markdown, no text outside JSON:
 [
   {
@@ -75,7 +79,7 @@ Respond ONLY with a valid JSON array, highest score first — no markdown, no te
     "ebay_indices": [2, 5],
     "thingiverse_indices": [1, 3],
     "reasons": ["234 eBay sold in 30 days", "15K Thingiverse downloads proves print demand"],
-    "meshy_prompt": "3D model of [specific description], detailed surface, game-ready mesh, [art style]",
+    "meshy_prompt": "3D model of [specific shape/texture/colors from listing description], [art style], detailed surface normals, game-ready mesh, physically based rendering",
     "redesign_ideas": "Specific improvements: variant colorways, LED cavity, modular parts"
   }
 ]
@@ -215,13 +219,13 @@ class ResearchAgent:
                     "currency": cur,
                 }
 
-        # Step 3: Thingiverse — search primary term + one category-specific term
-        tv_terms = [search_query, search_terms[-1]] if len(search_terms) > 1 else [search_query]
+        # Step 3: Thingiverse — all 3 search terms, limit scales with eBay limit
+        tv_per_term = max(8, limit // len(search_terms) + 4)
         thingiverse_things: list[dict] = []
         thingiverse_error:  str | None = None
         tv_seen: set = set()
-        for tv_term in tv_terms:
-            tv_result = self.tools.thingiverse_search(tv_term, limit=6, sort="popular")
+        for tv_term in search_terms:
+            tv_result = self.tools.thingiverse_search(tv_term, limit=tv_per_term, sort="popular")
             if tv_result.get("error"):
                 thingiverse_error = tv_result["error"]
                 logger.info("Thingiverse error for %r: %s", tv_term, thingiverse_error)
@@ -231,7 +235,7 @@ class ResearchAgent:
                 if tid and tid not in tv_seen:
                     tv_seen.add(tid)
                     thingiverse_things.append(t)
-        thingiverse_things.sort(key=lambda t: t.get("likes", 0), reverse=True)
+        thingiverse_things.sort(key=lambda t: t.get("likes", 0) + t.get("downloads", 0) // 10, reverse=True)
 
         # Step 4: Real eBay sold data (Finding API on primary term)
         sold_data = self.tools.ebay_sold_data(search_query, timeframe_days=timeframe_days)
@@ -247,12 +251,16 @@ class ResearchAgent:
             search_terms=search_terms,
         )
 
+        # Step 7: Action plan — top 3 concrete "what to make" recommendations
+        action_plan = _build_action_plan(scored_items, sold_data)
+
         return {
             "query":               query,
             "search_query":        search_query,
             "search_terms":        search_terms,
             "timeframe_days":      timeframe_days,
             "summary":             summary,
+            "action_plan":         action_plan,
             "ranked_products":     scored_items,
             "total_results":       total_ebay_results,
             "price_range":         price_range,
@@ -329,10 +337,12 @@ class ResearchAgent:
         """
         ebay_list = [
             {
-                "index":    i + 1,
-                "title":    item.get("title", "")[:100],
-                "price":    item.get("price", ""),
-                "category": item.get("category", ""),
+                "index":             i + 1,
+                "title":             item.get("title", "")[:100],
+                "price":             item.get("price", ""),
+                "category":          item.get("category", ""),
+                "short_description": (item.get("short_description") or "")[:200],
+                "image_url":         item.get("image_url", ""),
             }
             for i, item in enumerate(ebay_items)
         ]
@@ -699,6 +709,52 @@ def _extract_search_query(query: str) -> str:
         '', q, flags=re.IGNORECASE,
     ).strip()
     return q if len(q) >= 3 else query
+
+
+def _build_action_plan(scored_items: list[dict], sold_data: dict) -> list[dict]:
+    """
+    Build a top-3 action plan from already-scored products.
+    Returns structured dicts suitable for the UI ACTION PLAN section.
+    No extra LLM call — derived from cross-reference scoring output.
+    """
+    candidates = [p for p in scored_items if p.get("recreation_score", 0) >= 4]
+    if not candidates:
+        candidates = scored_items  # fall back to all if none score high enough
+    top3 = candidates[:3]
+
+    sold_count = sold_data.get("sold_count", 0)
+    avg_price  = sold_data.get("avg_sold_price")
+    gmv        = sold_data.get("total_gmv")
+    tf         = sold_data.get("timeframe_days", 30)
+
+    market_note = ""
+    if sold_count > 0 and avg_price:
+        market_note = f"{sold_count} sold in {tf}d @ avg ${avg_price}"
+        if gmv:
+            market_note += f" (${gmv} GMV)"
+
+    plan: list[dict] = []
+    for i, item in enumerate(top3):
+        reasons = item.get("recreation_reasons") or []
+        reason_str = "; ".join(str(r) for r in reasons[:2]) if reasons else ""
+        if market_note and i == 0:
+            reason_str = (market_note + " — " + reason_str) if reason_str else market_note
+
+        plan.append({
+            "rank":          i + 1,
+            "make":          item.get("opportunity") or item.get("title", "Unknown")[:60],
+            "why":           reason_str or f"Recreation score {item.get('recreation_score', 0)}/10",
+            "score":         item.get("recreation_score", 0),
+            "tier":          item.get("recreation_tier", "medium"),
+            "price_ref":     item.get("price", ""),
+            "meshy_prompt":  item.get("meshy_prompt", ""),
+            "redesign_ideas": item.get("redesign_ideas", ""),
+            "ebay_url":      item.get("url", ""),
+            "tv_url":        item.get("tv_url", ""),
+            "tv_name":       item.get("tv_name", ""),
+            "image_url":     item.get("image_url", ""),
+        })
+    return plan
 
 
 def _dedupe_sources(sources: list) -> list:

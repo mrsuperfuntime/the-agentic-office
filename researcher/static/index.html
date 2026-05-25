@@ -529,6 +529,66 @@
     .prod-btn:hover { border-color: var(--accent); color: var(--accent); }
     .prod-btn.copied { border-color: var(--success); color: var(--success); }
 
+    /* ── Action Plan ──────────────────────────────── */
+    .action-plan {
+      margin-bottom: 20px;
+      border: 1px solid rgba(0,180,216,.35);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .action-plan-head {
+      background: rgba(0,180,216,.08);
+      border-bottom: 1px solid rgba(0,180,216,.2);
+      padding: 10px 16px;
+      display: flex; align-items: center; gap: 10px;
+    }
+    .action-plan-title {
+      font-family: var(--display); font-size: .75em; font-weight: 900;
+      color: var(--accent); letter-spacing: .1em;
+    }
+    .action-plan-sub { font-size: .65em; color: var(--text-muted); margin-left: auto; }
+    .action-item {
+      display: flex; align-items: flex-start; gap: 14px;
+      padding: 14px 16px;
+      border-bottom: 1px solid var(--border);
+    }
+    .action-item:last-child { border-bottom: none; }
+    .action-rank {
+      font-family: var(--display); font-size: 1.4em; font-weight: 900;
+      color: var(--accent); opacity: .6; min-width: 28px; line-height: 1;
+      padding-top: 2px;
+    }
+    .action-rank.high   { color: var(--success); opacity: 1; }
+    .action-rank.medium { color: var(--warning); opacity: 1; }
+    .action-img {
+      width: 52px; height: 52px; object-fit: cover; border-radius: 4px;
+      flex-shrink: 0; background: var(--surface3);
+    }
+    .action-body { flex: 1; min-width: 0; }
+    .action-make {
+      font-family: var(--display); font-size: .78em; font-weight: 700;
+      color: var(--text); margin-bottom: 3px; letter-spacing: .04em;
+    }
+    .action-why { font-size: .7em; color: var(--text-muted); line-height: 1.4; margin-bottom: 4px; }
+    .action-links { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 4px; }
+    .action-link {
+      font-size: .65em; padding: 2px 8px; border-radius: 3px;
+      border: 1px solid var(--border2); color: var(--text-muted);
+      text-decoration: none; transition: all .15s;
+    }
+    .action-link:hover { border-color: var(--accent); color: var(--accent); }
+    .action-link.tv { border-color: rgba(6,214,160,.3); color: var(--success); }
+    .action-link.tv:hover { border-color: var(--success); }
+    .action-score-badge {
+      font-size: .6em; padding: 1px 6px; border-radius: 10px; margin-left: 6px;
+      font-family: var(--display); letter-spacing: .04em;
+      background: rgba(0,180,216,.1); border: 1px solid rgba(0,180,216,.3);
+      color: var(--accent); vertical-align: middle;
+    }
+    .action-score-badge.high   { background: rgba(6,214,160,.1);  border-color: rgba(6,214,160,.4);  color: var(--success); }
+    .action-score-badge.medium { background: rgba(247,127,0,.1);  border-color: rgba(247,127,0,.4);  color: var(--warning); }
+    .action-score-badge.low    { background: rgba(230,57,70,.1);   border-color: rgba(230,57,70,.4);   color: var(--error);   }
+
     /* Limit control for product mode */
     .limit-wrap {
       display: flex; align-items: center; gap: 10px;
@@ -878,6 +938,7 @@
       <div class="report" id="productSummaryEl"></div>
     </div>
     <div id="thingiverseEl"></div>
+    <div id="actionPlanEl"></div>
     <div class="product-grid" id="productGrid"></div>
   </div>
 
@@ -1374,6 +1435,9 @@
         </div>`;
     }
 
+    // Action plan
+    showActionPlan(data.action_plan || []);
+
     // Cards
     const grid = document.getElementById('productGrid');
     grid.innerHTML = products.length
@@ -1387,6 +1451,40 @@
 
   function hideProducts() {
     document.getElementById('productPanel').classList.remove('on');
+  }
+
+  function showActionPlan(plan) {
+    const el = document.getElementById('actionPlanEl');
+    if (!plan || !plan.length) { el.innerHTML = ''; return; }
+    const items = plan.map(p => {
+      const tier = (p.tier || 'medium').toLowerCase();
+      const imgHtml = p.image_url
+        ? `<img class="action-img" src="${esc(p.image_url)}" alt="" loading="lazy" onerror="this.style.display='none'">`
+        : '';
+      const links = [
+        p.ebay_url ? `<a class="action-link" href="${esc(p.ebay_url)}" target="_blank" rel="noopener">🔗 eBay</a>` : '',
+        p.tv_url   ? `<a class="action-link tv" href="${esc(p.tv_url)}" target="_blank" rel="noopener">🖨 ${esc((p.tv_name || 'Thingiverse').slice(0, 28))}</a>` : '',
+      ].filter(Boolean).join('');
+      return `<div class="action-item">
+        <div class="action-rank ${tier}">#${p.rank}</div>
+        ${imgHtml}
+        <div class="action-body">
+          <div class="action-make">${esc(p.make)}
+            <span class="action-score-badge ${tier}">${p.score}/10 ${tier.toUpperCase()}</span>
+          </div>
+          <div class="action-why">${esc(p.why || '')}</div>
+          ${p.price_ref ? `<div style="font-size:.65em;color:var(--accent2);margin-bottom:2px">Reference price: ${esc(p.price_ref)}</div>` : ''}
+          ${links ? `<div class="action-links">${links}</div>` : ''}
+        </div>
+      </div>`;
+    }).join('');
+    el.innerHTML = `<div class="action-plan">
+      <div class="action-plan-head">
+        <span class="action-plan-title">WHAT TO MAKE</span>
+        <span class="action-plan-sub">Top ${plan.length} recreation opportunities</span>
+      </div>
+      ${items}
+    </div>`;
   }
 
   function productCardHtml(p, rank) {
