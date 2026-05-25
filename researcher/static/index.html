@@ -1099,6 +1099,7 @@
           <select class="form-select" id="sfMode">
             <option value="research">Full Research</option>
             <option value="products">Product Research</option>
+            <option value="3d">3D Models</option>
             <option value="quick">Quick Answer</option>
           </select>
         </div>
@@ -2191,7 +2192,7 @@
                       : s.schedule_type === 'weekly'   ? `Weekly ${utcTimeToCt(s.schedule_time)} CT`
                       : s.schedule_type === 'interval' ? `Every ${s.interval_hours}h`
                       : s.schedule_type;
-      const modeLabel = { research: 'RESEARCH', products: 'PRODUCTS', '3d': '3D MODELS', quick: 'QUICK' }[s.mode] || s.mode;
+      const modeLabel = { research: 'FULL RESEARCH', products: 'PRODUCTS', '3d': '3D MODELS', quick: 'QUICK' }[s.mode] || s.mode;
       const nextRun   = toCtString(s.next_run) || 'not scheduled';
       const lastRun   = toCtString(s.last_run) || 'never';
       return `<div class="schedule-item ${s.active ? '' : 'inactive'}" id="sched_${s.id}">

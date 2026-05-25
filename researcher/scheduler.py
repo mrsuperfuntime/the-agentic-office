@@ -24,6 +24,8 @@ def _run_job(schedule_id: int, schedule_name: str, query: str, mode: str):
 
         if mode == "products":
             result = agent.research_and_rank(query, limit=12)
+        elif mode == "3d":
+            result = agent.thingiverse_model_search(query, limit=12, sort="popular")
         elif mode == "quick":
             answer = agent.quick_answer(query)
             result = {"answer": answer}
