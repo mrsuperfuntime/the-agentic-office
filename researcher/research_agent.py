@@ -219,8 +219,9 @@ class ResearchAgent:
                     "currency": cur,
                 }
 
-        # Step 3: Thingiverse — context-aware terms focused on 3D printable items
-        tv_terms = self._expand_thingiverse_queries(search_query, search_terms)
+        # Step 3: Thingiverse — context-aware terms; always include raw query as first hit
+        expanded_tv = self._expand_thingiverse_queries(search_query, search_terms)
+        tv_terms = [search_query] + [t for t in expanded_tv if t.lower() != search_query.lower()]
         logger.info("Thingiverse search terms: %s", tv_terms)
         tv_per_term = max(4, limit // max(len(tv_terms), 1) + 3)
         thingiverse_things: list[dict] = []
@@ -296,7 +297,9 @@ class ResearchAgent:
         started_at   = datetime.now(timezone.utc).isoformat()
         search_query = _extract_search_query(query)
 
-        tv_terms = self._expand_3d_model_queries(search_query, n=4)
+        # Always search the raw query first — guarantees at least one direct hit
+        expanded  = self._expand_3d_model_queries(search_query, n=3)
+        tv_terms  = [search_query] + [t for t in expanded if t.lower() != search_query.lower()]
         logger.info("3D model search terms: %s (days_ago=%d)", tv_terms, days_ago)
 
         # When filtering by recent date, fetch more per term to ensure enough survive the filter
@@ -463,20 +466,21 @@ class ResearchAgent:
         logger.warning("Thingiverse query expansion failed for %r, using original", query)
         return [query]
 
-    def _expand_3d_model_queries(self, query: str, n: int = 4) -> list[str]:
+    def _expand_3d_model_queries(self, query: str, n: int = 3) -> list[str]:
         """
-        Generate n Thingiverse search terms where EVERY term is anchored to 3D printing.
-        Unlike _expand_thingiverse_queries (which is category-aware), these are direct
-        Thingiverse search strings — each should surface real printable models.
-        E.g. 'shohei ohtani' → ['baseball card holder stl', 'baseball helmet 3d printable',
-                                  'baseball display stand print', 'baseball figurine model']
+        Generate n Thingiverse search terms that match actual model names/tags on Thingiverse.
+        DO NOT include meta-words like 'stl', '3d print', 'printable' — those words never
+        appear in model names and will produce zero results on Thingiverse's search engine.
+        The original query is always prepended as the guaranteed first term by the caller.
         """
         resp = self._call_ollama(
             [
                 {
                     "role": "system",
                     "content": (
-                        "You generate Thingiverse search queries. Every term must be 3D printing specific. "
+                        "You generate Thingiverse search keywords. These are searched against model "
+                        "NAMES and TAGS on Thingiverse — do NOT include 'stl', '3d print', 'printable', "
+                        "or similar meta-words; they never appear in model titles and return zero results. "
                         "Return ONLY a valid JSON array of strings — no explanation, no markdown."
                     ),
                 },
@@ -484,17 +488,17 @@ class ResearchAgent:
                     "role": "user",
                     "content": (
                         f"Topic: '{query}'\n\n"
-                        f"Generate {n} Thingiverse search queries for 3D printable models related to this topic.\n"
+                        f"Generate {n} Thingiverse search keywords that would match real model names on Thingiverse.\n"
                         f"Rules:\n"
-                        f"  - Keep the EXACT topic name or franchise name in EVERY term — do NOT replace it with a generic category word\n"
-                        f"  - Every term MUST also include a 3D print context word: stl, 3d print, printable, model, print, replica, prop, figure, stand, holder, mount\n"
-                        f"  - Each term should target a different TYPE of printable item (wearable, display, figurine, accessory, prop, etc.)\n"
-                        f"  - Keep each query to 3-5 words\n\n"
+                        f"  - Use natural names that a designer would title their model (e.g. 'Harry Potter Wand', not 'harry potter wand stl')\n"
+                        f"  - Keep the franchise/character name in terms where it fits\n"
+                        f"  - Each term targets a different object type: prop, figurine, display stand, helmet, bust, keychain, organizer, etc.\n"
+                        f"  - 2-4 words max per term\n\n"
                         f"Examples:\n"
-                        f"  'harry potter'   → [\"harry potter wand stl\", \"harry potter figure 3d print\", \"hogwarts prop printable\", \"harry potter display stand model\"]\n"
-                        f"  'shohei ohtani'  → [\"shohei ohtani figurine 3d print\", \"baseball card holder stl\", \"baseball helmet model\", \"baseball display stand printable\"]\n"
-                        f"  'mandalorian'    → [\"mandalorian helmet stl\", \"mandalorian armor 3d print\", \"mandalorian figure printable\", \"beskar prop model\"]\n"
-                        f"  'pokemon'        → [\"pokemon figure 3d print\", \"pokeball display stand stl\", \"pikachu model printable\", \"pokemon card holder model\"]\n\n"
+                        f"  'harry potter'  → [\"harry potter wand\", \"hogwarts castle\", \"deathly hallows\"]\n"
+                        f"  'mandalorian'   → [\"mandalorian helmet\", \"mandalorian figurine\", \"beskar armor\"]\n"
+                        f"  'pokemon'       → [\"pokemon figure\", \"pokeball stand\", \"pikachu bust\"]\n"
+                        f"  'shohei ohtani' → [\"baseball card holder\", \"baseball helmet replica\", \"baseball trophy\"]\n\n"
                         f"Return JSON array only."
                     ),
                 },
@@ -516,7 +520,7 @@ class ResearchAgent:
             if clean:
                 return clean[:n]
         logger.warning("3D model query expansion failed for %r, using fallback", query)
-        return [f"{query} 3d print", f"{query} stl", f"{query} printable model"]
+        return [query, f"{query} figure", f"{query} prop"]
 
     # ── Cross-platform opportunity scoring ───────────────────────────────────
 
