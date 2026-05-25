@@ -7,11 +7,12 @@ the larger Agentic Office stack via /handle-request.
 """
 import logging
 import os
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -20,6 +21,8 @@ from starlette.middleware.base import BaseHTTPMiddleware
 load_dotenv()
 
 from research_agent import ResearchAgent  # noqa: E402 — load_dotenv must run first
+import database as db
+import scheduler as sched
 
 logging.basicConfig(
     level=logging.INFO,
@@ -55,10 +58,19 @@ class ApiKeyMiddleware(BaseHTTPMiddleware):
         return await call_next(request)
 
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    db.init_db()
+    sched.startup()
+    yield
+    sched.shutdown()
+
+
 app = FastAPI(
     title="THE RESEARCHER",
     version="1.0.0",
     description="Local Ollama-powered research agent — web search, Wikipedia, eBay",
+    lifespan=lifespan,
 )
 
 app.add_middleware(ApiKeyMiddleware)
@@ -83,6 +95,16 @@ class QuickRequest(BaseModel):
 class ProductResearchRequest(BaseModel):
     query: str = Field(..., min_length=3, description="Product or category to research")
     limit: int = Field(default=12, ge=1, le=20, description="Max eBay listings to fetch and score")
+
+
+class ScheduleCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=80)
+    query: str = Field(..., min_length=3)
+    mode: str = Field(default="research", pattern="^(research|products|quick)$")
+    schedule_type: str = Field(..., pattern="^(daily|weekly|interval)$")
+    schedule_time: str | None = Field(default=None, description="HH:MM in UTC, required for daily/weekly")
+    schedule_days: list[str] | None = Field(default=None, description="Days for weekly, e.g. ['mon','fri']")
+    interval_hours: int | None = Field(default=None, ge=1, le=168, description="Hours between runs, required for interval")
 
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
@@ -212,6 +234,77 @@ async def handle_request(request: dict):
         "status": "unknown_action",
         "available_actions": ["message", "research", "quick_answer", "product_research", "status"],
     }
+
+
+# ── Schedule endpoints ────────────────────────────────────────────────────────
+
+@app.get("/schedules")
+async def list_schedules():
+    schedules = db.get_schedules()
+    for s in schedules:
+        s["next_run"] = sched.get_next_run(s["id"]) or s.get("next_run")
+    return {"status": "success", "data": schedules}
+
+
+@app.post("/schedules")
+async def create_schedule(req: ScheduleCreate):
+    if req.schedule_type in ("daily", "weekly") and not req.schedule_time:
+        raise HTTPException(400, "schedule_time (HH:MM) required for daily/weekly schedules")
+    if req.schedule_type == "interval" and not req.interval_hours:
+        raise HTTPException(400, "interval_hours required for interval schedules")
+    schedule_id = db.create_schedule(
+        name=req.name, query=req.query, mode=req.mode,
+        schedule_type=req.schedule_type, schedule_time=req.schedule_time,
+        schedule_days=req.schedule_days, interval_hours=req.interval_hours,
+    )
+    schedule = db.get_schedule(schedule_id)
+    sched.add_job(schedule)
+    return {"status": "success", "data": schedule}
+
+
+@app.patch("/schedules/{schedule_id}/active")
+async def toggle_schedule(schedule_id: int, active: bool):
+    schedule = db.get_schedule(schedule_id)
+    if not schedule:
+        raise HTTPException(404, "Schedule not found")
+    db.set_schedule_active(schedule_id, active)
+    if active:
+        sched.add_job(db.get_schedule(schedule_id))
+    else:
+        sched.remove_job(schedule_id)
+    return {"status": "success", "active": active}
+
+
+@app.delete("/schedules/{schedule_id}")
+async def delete_schedule(schedule_id: int):
+    if not db.get_schedule(schedule_id):
+        raise HTTPException(404, "Schedule not found")
+    sched.remove_job(schedule_id)
+    db.delete_schedule(schedule_id)
+    return {"status": "success"}
+
+
+# ── Report endpoints ──────────────────────────────────────────────────────────
+
+@app.get("/reports")
+async def list_reports():
+    return {"status": "success", "data": db.get_reports()}
+
+
+@app.get("/reports/{report_id}")
+async def get_report(report_id: int):
+    report = db.get_report(report_id)
+    if not report:
+        raise HTTPException(404, "Report not found")
+    return {"status": "success", "data": report}
+
+
+@app.delete("/reports/{report_id}")
+async def delete_report(report_id: int):
+    if not db.get_report(report_id):
+        raise HTTPException(404, "Report not found")
+    db.delete_report(report_id)
+    return {"status": "success"}
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
