@@ -1,0 +1,34 @@
+services:
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:11434:11434"
+    volumes:
+      - ollama_models:/root/.ollama
+    # NVIDIA GPU support — remove 'deploy' block if no GPU
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  researcher:
+    build: .
+    container_name: researcher
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8009:8009"
+    env_file: .env
+    environment:
+      - OLLAMA_URL=http://ollama:11434
+      - HOST=0.0.0.0
+    depends_on:
+      - ollama
+
+volumes:
+  ollama_models:
