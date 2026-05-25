@@ -549,15 +549,17 @@ class ResearchAgent:
             tv_note = "\nThingiverse: no models found for this query"
 
         prompt = (
-            f"You are THE RESEARCHER. Write a concise 3-paragraph market analysis for: '{query}'"
-            f"{terms_note}\n"
-            f"Market demand: {demand}{sold_note}\n"
-            f"Top recreation candidates:\n{top_titles}\n"
-            f"{tv_note}\n\n"
-            f"Cover: (1) market size and demand using real sold numbers, "
-            f"(2) Thingiverse evidence with specific like/download counts for recreation feasibility, "
-            f"(3) top 2-3 specific recommendations for Meshy AI recreation. "
-            f"Be direct and use the actual numbers provided."
+            f"You are THE RESEARCHER advising a 3D printing entrepreneur on what to MAKE AND SELL.\n\n"
+            f"Topic: '{query}'{terms_note}\n\n"
+            f"EBAY DEMAND SIGNAL:{sold_note}\n"
+            f"Top cross-referenced opportunities (eBay × Thingiverse scored):\n{top_titles}\n\n"
+            f"THINGIVERSE PRINTABILITY SIGNAL:{tv_note}\n\n"
+            f"Write 3 tight paragraphs:\n"
+            f"1. What eBay shows is actively selling — price range, volume, and demand level\n"
+            f"2. What Thingiverse confirms is proven printable — cite specific download and like numbers\n"
+            f"3. The convergence: exactly what to 3D print, what to charge, and why these two signals "
+            f"create a real selling opportunity. Be specific — name the product.\n"
+            f"No fluff. Real numbers only. End with a clear action."
         )
         resp = self._call_ollama(
             [{"role": "user", "content": prompt}],
@@ -770,46 +772,67 @@ def _extract_search_query(query: str) -> str:
 
 def _build_action_plan(scored_items: list[dict], sold_data: dict) -> list[dict]:
     """
-    Build a top-3 action plan from already-scored products.
-    Returns structured dicts suitable for the UI ACTION PLAN section.
+    Build a top-3 convergence action plan from already-scored products.
+    Each item surfaces both eBay demand evidence and Thingiverse printability evidence.
     No extra LLM call — derived from cross-reference scoring output.
     """
     candidates = [p for p in scored_items if p.get("recreation_score", 0) >= 4]
     if not candidates:
-        candidates = scored_items  # fall back to all if none score high enough
+        candidates = scored_items
     top3 = candidates[:3]
 
     sold_count = sold_data.get("sold_count", 0)
     avg_price  = sold_data.get("avg_sold_price")
+    min_price  = sold_data.get("min_sold_price")
+    max_price  = sold_data.get("max_sold_price")
     gmv        = sold_data.get("total_gmv")
     tf         = sold_data.get("timeframe_days", 30)
-
-    market_note = ""
-    if sold_count > 0 and avg_price:
-        market_note = f"{sold_count} sold in {tf}d @ avg ${avg_price}"
-        if gmv:
-            market_note += f" (${gmv} GMV)"
+    currency   = sold_data.get("currency", "USD")
 
     plan: list[dict] = []
     for i, item in enumerate(top3):
+        # eBay demand evidence — sold data on top item, listing price on others
+        ebay_parts: list[str] = []
+        if i == 0 and sold_count > 0:
+            ebay_parts.append(f"{sold_count} sold in {tf}d")
+            if avg_price:
+                ebay_parts.append(f"avg ${avg_price}")
+            if min_price and max_price:
+                ebay_parts.append(f"range ${min_price}–${max_price}")
+            if gmv:
+                ebay_parts.append(f"GMV ${gmv}")
+        elif item.get("price"):
+            ebay_parts.append(f"listed {item['price']}")
+        ebay_evidence = " · ".join(ebay_parts) if ebay_parts else ""
+
+        # Thingiverse printability evidence — from cross-ref scoring
+        tv_parts: list[str] = []
+        if item.get("tv_downloads", 0) > 0:
+            tv_parts.append(f"{item['tv_downloads']:,} downloads")
+        if item.get("tv_likes", 0) > 0:
+            tv_parts.append(f"{item['tv_likes']:,} likes")
+        if item.get("tv_makes", 0) > 0:
+            tv_parts.append(f"{item['tv_makes']:,} makes")
+        tv_evidence = " · ".join(tv_parts) if tv_parts else ""
+
         reasons = item.get("recreation_reasons") or []
-        reason_str = "; ".join(str(r) for r in reasons[:2]) if reasons else ""
-        if market_note and i == 0:
-            reason_str = (market_note + " — " + reason_str) if reason_str else market_note
+        why = "; ".join(str(r) for r in reasons[:2]) if reasons else f"Score {item.get('recreation_score', 0)}/10"
 
         plan.append({
-            "rank":          i + 1,
-            "make":          item.get("opportunity") or item.get("title", "Unknown")[:60],
-            "why":           reason_str or f"Recreation score {item.get('recreation_score', 0)}/10",
-            "score":         item.get("recreation_score", 0),
-            "tier":          item.get("recreation_tier", "medium"),
-            "price_ref":     item.get("price", ""),
-            "meshy_prompt":  item.get("meshy_prompt", ""),
+            "rank":           i + 1,
+            "make":           item.get("opportunity") or item.get("title", "Unknown")[:60],
+            "why":            why,
+            "ebay_evidence":  ebay_evidence,
+            "tv_evidence":    tv_evidence,
+            "score":          item.get("recreation_score", 0),
+            "tier":           item.get("recreation_tier", "medium"),
+            "price_ref":      item.get("price", ""),
+            "meshy_prompt":   item.get("meshy_prompt", ""),
             "redesign_ideas": item.get("redesign_ideas", ""),
-            "ebay_url":      item.get("url", ""),
-            "tv_url":        item.get("tv_url", ""),
-            "tv_name":       item.get("tv_name", ""),
-            "image_url":     item.get("image_url", ""),
+            "ebay_url":       item.get("url", ""),
+            "tv_url":         item.get("tv_url", ""),
+            "tv_name":        item.get("tv_name", ""),
+            "image_url":      item.get("image_url", ""),
         })
     return plan
 
