@@ -7,10 +7,12 @@ Two modes:
                              → LLM recreation scoring → ranked cards
 """
 import asyncio
+import base64
 import json
 import logging
 import os
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -410,6 +412,9 @@ class ResearchAgent:
             )
         things = things[:limit]
 
+        # Generate vision-based Meshy AI prompts from thumbnails (skipped if VISION_MODEL unset)
+        things = self._batch_describe_images(things)
+
         # eBay market reference — what does this category sell for?
         ebay_ref    = self.tools.ebay_search(search_query, limit=5)
         price_range = ebay_ref.get("price_range", {})
@@ -619,6 +624,73 @@ class ResearchAgent:
 
         logger.warning("3D model query expansion produced no valid terms for %r, using suffix fallback", query)
         return _tv_suffix_fallback(query, n)
+
+    # ── Vision-based Meshy AI prompt generation ───────────────────────────────
+
+    def _describe_image_for_meshy(self, image_url: str, name: str = "") -> str:
+        """
+        Download an image and use the configured vision model to generate a
+        Meshy AI prompt describing the object's geometry, style, and key details.
+        Returns empty string if VISION_MODEL is unset or the call fails.
+        """
+        vision_model = os.getenv("VISION_MODEL", "").strip()
+        if not vision_model or not image_url:
+            return ""
+        try:
+            img_resp = requests.get(image_url, timeout=10)
+            if img_resp.status_code != 200:
+                return ""
+            image_b64 = base64.b64encode(img_resp.content).decode()
+            context   = f" The model is titled '{name}'." if name else ""
+            payload   = {
+                "model":   vision_model,
+                "messages": [{
+                    "role":    "user",
+                    "content": (
+                        f"This is a 3D printable model.{context} "
+                        "Write a single Meshy AI text-to-3D prompt (2–3 sentences) that would reproduce "
+                        "this exact object. Include: the object type, its geometric shape and proportions, "
+                        "surface texture and material look, art style (realistic / stylized / mechanical / "
+                        "cartoon), and any distinctive features. Be specific and visual. "
+                        "Start directly with the description — no preamble."
+                    ),
+                    "images": [image_b64],
+                }],
+                "stream":  False,
+                "options": {"temperature": 0.2, "num_predict": 200},
+            }
+            resp = requests.post(
+                f"{self.ollama_url}/api/chat",
+                json=payload,
+                timeout=45,
+            )
+            if resp.status_code == 200:
+                return resp.json().get("message", {}).get("content", "").strip()
+        except Exception as e:
+            logger.warning("Vision description failed for %s: %s", image_url, e)
+        return ""
+
+    def _batch_describe_images(self, things: list[dict], max_workers: int = 3) -> list[dict]:
+        """Generate Meshy prompts for all things that have a thumbnail, concurrently."""
+        vision_model = os.getenv("VISION_MODEL", "").strip()
+        if not vision_model:
+            return things
+        logger.info("Generating vision-based Meshy prompts for %d models (model=%s)", len(things), vision_model)
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            futures = {
+                pool.submit(self._describe_image_for_meshy, t.get("thumbnail", ""), t.get("name", "")): i
+                for i, t in enumerate(things)
+                if t.get("thumbnail")
+            }
+            for future in as_completed(futures):
+                idx = futures[future]
+                try:
+                    prompt = future.result()
+                    if prompt:
+                        things[idx]["meshy_prompt"] = prompt
+                except Exception as e:
+                    logger.warning("Vision worker error at index %d: %s", idx, e)
+        return things
 
     # ── Cross-platform opportunity scoring ───────────────────────────────────
 
