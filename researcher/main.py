@@ -5,6 +5,7 @@ Standalone local-first research agent powered by Ollama.
 Designed to run on your PC's resources and eventually slot into
 the larger Agentic Office stack via /handle-request.
 """
+import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -23,6 +24,7 @@ _ENV_FILE = Path(__file__).parent / ".env"
 load_dotenv(dotenv_path=_ENV_FILE)
 
 from research_agent import ResearchAgent  # noqa: E402 — load_dotenv must run first
+from meshy import MeshyClient
 import database as db
 import scheduler as sched
 
@@ -80,7 +82,8 @@ app.add_middleware(ApiKeyMiddleware)
 _static = Path(__file__).parent / "static"
 app.mount("/static", StaticFiles(directory=str(_static)), name="static")
 
-agent = ResearchAgent()
+agent  = ResearchAgent()
+meshy  = MeshyClient()
 
 
 # ── Request models ────────────────────────────────────────────────────────────
@@ -105,6 +108,14 @@ class ThreeDModelSearchRequest(BaseModel):
     limit:    int = Field(default=12, ge=1, le=20, description="Max models to return")
     sort:     str = Field(default="popular", description="Thingiverse sort: popular, newest, makes, derivatives")
     days_ago: int = Field(default=0, ge=0, le=365, description="Only show models added within this many days (0 = all time)")
+
+
+class MeshyGenerateRequest(BaseModel):
+    prompt:          str  = Field(..., min_length=5, description="Text-to-3D prompt")
+    art_style:       str  = Field(default="realistic", description="realistic | cartoon | low-poly | sculpture | pbr")
+    negative_prompt: str  = Field(default="", description="What to avoid in the generation")
+    mode:            str  = Field(default="preview", description="preview or refine")
+    preview_task_id: str | None = Field(default=None, description="Required when mode=refine")
 
 
 class ScheduleCreate(BaseModel):
@@ -325,6 +336,46 @@ async def three_d_model_search(request: ThreeDModelSearchRequest):
     logger.info("3D model search: %s (limit=%d, sort=%s, days_ago=%d)", request.query[:80], request.limit, request.sort, request.days_ago)
     result = await agent.thingiverse_model_search_async(request.query, limit=request.limit, sort=request.sort, days_ago=request.days_ago)
     return {"status": "success", "data": result}
+
+
+@app.post("/meshy/generate")
+async def meshy_generate(request: MeshyGenerateRequest):
+    """
+    Submit a Meshy AI text-to-3D generation job.
+    mode=preview  → fast low-res preview (~1-2 min), returns task_id
+    mode=refine   → high-res refinement of a preview, requires preview_task_id
+    Poll GET /meshy/task/{task_id} for status + download URLs.
+    """
+    if not meshy.configured():
+        raise HTTPException(400, "MESHY_API_KEY not configured — add it to .env on Chauncy")
+    if request.mode == "refine":
+        if not request.preview_task_id:
+            raise HTTPException(400, "preview_task_id is required for refine mode")
+        result = await asyncio.to_thread(meshy.text_to_3d_refine, request.preview_task_id)
+    else:
+        result = await asyncio.to_thread(
+            meshy.text_to_3d_preview, request.prompt, request.art_style, request.negative_prompt
+        )
+    if result.get("error"):
+        raise HTTPException(502, result["error"])
+    return {"status": "success", "data": result}
+
+
+@app.get("/meshy/task/{task_id}")
+async def meshy_task_status(task_id: str):
+    """Poll a Meshy AI generation job. Returns status, progress %, thumbnail, and model download URLs."""
+    if not meshy.configured():
+        raise HTTPException(400, "MESHY_API_KEY not configured")
+    result = await asyncio.to_thread(meshy.get_task, task_id)
+    if result.get("error"):
+        raise HTTPException(502, result["error"])
+    return {"status": "success", "data": result}
+
+
+@app.get("/meshy/status")
+async def meshy_status():
+    """Returns whether Meshy AI is configured."""
+    return {"configured": meshy.configured()}
 
 
 @app.post("/handle-request")
