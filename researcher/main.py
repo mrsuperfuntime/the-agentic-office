@@ -118,6 +118,11 @@ class MeshyGenerateRequest(BaseModel):
     preview_task_id: str | None = Field(default=None, description="Required when mode=refine")
 
 
+class MeshyImageRequest(BaseModel):
+    image_url:  str  = Field(..., description="Public URL of the image to convert to 3D")
+    enable_pbr: bool = Field(default=False, description="Generate PBR maps")
+
+
 class ScheduleCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=80)
     query: str = Field(..., min_length=3)
@@ -361,12 +366,26 @@ async def meshy_generate(request: MeshyGenerateRequest):
     return {"status": "success", "data": result}
 
 
+@app.post("/meshy/image-to-3d")
+async def meshy_image_to_3d(request: MeshyImageRequest):
+    """Submit a Meshy AI image-to-3D job using a thumbnail URL. Poll GET /meshy/task/{task_id}?type=image."""
+    if not meshy.configured():
+        raise HTTPException(400, "MESHY_API_KEY not configured — add it to .env on Chauncy")
+    result = await asyncio.to_thread(meshy.image_to_3d, request.image_url, request.enable_pbr)
+    if result.get("error"):
+        raise HTTPException(502, result["error"])
+    return {"status": "success", "data": result}
+
+
 @app.get("/meshy/task/{task_id}")
-async def meshy_task_status(task_id: str):
-    """Poll a Meshy AI generation job. Returns status, progress %, thumbnail, and model download URLs."""
+async def meshy_task_status(task_id: str, type: str = "text"):
+    """Poll a Meshy AI generation job. type=text (default) or type=image."""
     if not meshy.configured():
         raise HTTPException(400, "MESHY_API_KEY not configured")
-    result = await asyncio.to_thread(meshy.get_task, task_id)
+    if type == "image":
+        result = await asyncio.to_thread(meshy.get_image_to_3d_task, task_id)
+    else:
+        result = await asyncio.to_thread(meshy.get_task, task_id)
     if result.get("error"):
         raise HTTPException(502, result["error"])
     return {"status": "success", "data": result}

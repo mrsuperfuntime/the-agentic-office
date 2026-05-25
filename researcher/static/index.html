@@ -1739,7 +1739,7 @@
              onclick="toggleMeshyPanel('${pid}')">✦ GENERATE 3D</button>
         </div>
         <div class="meshy-gen-panel" id="panel_${pid}">
-          <div class="meshy-label">MESHY AI PROMPT${t.meshy_prompt ? '' : ' <span style="color:var(--text-muted);font-weight:normal">(edit before generating)</span>'}</div>
+          <div class="meshy-label">MESHY AI PROMPT</div>
           <textarea class="meshy-prompt-edit" id="edit_${pid}">${esc(meshy)}</textarea>
           <div class="meshy-style-row">
             <select class="meshy-style-select" id="style_${pid}">
@@ -1749,8 +1749,15 @@
               <option value="sculpture">Sculpture</option>
               <option value="pbr">PBR</option>
             </select>
+          </div>
+          <div style="display:flex;gap:6px;flex-wrap:wrap">
+            ${thumb ? `<button class="prod-btn" style="color:var(--success);border-color:rgba(6,214,160,.4);flex:1"
+              onclick="startMeshyFromImage('${pid}', '${thumb}')">🖼 FROM IMAGE</button>` : ''}
             <button class="prod-btn" style="color:var(--accent);border-color:rgba(0,180,216,.4);flex:2"
-              onclick="startMeshyGeneration('${pid}')">✦ START GENERATION</button>
+              onclick="startMeshyGeneration('${pid}')">✦ FROM TEXT</button>
+          </div>
+          <div style="font-size:.62em;color:var(--text-muted);margin-top:2px">
+            FROM IMAGE copies the exact shape · FROM TEXT generates from the description
           </div>
           <div id="status_${pid}" style="font-size:.68em;color:var(--text-muted)"></div>
           <div class="meshy-progress-bar" id="pbar_${pid}" style="display:none">
@@ -1961,17 +1968,44 @@
       const taskId = j.data?.task_id;
       if (!taskId) { statusEl.textContent = '✗ No task ID returned'; return; }
       statusEl.textContent = `⏳ Generation started (${taskId.slice(0, 8)}…)`;
-      _pollMeshyTask(pid, taskId, statusEl, pfillEl, resultEl);
+      _pollMeshyTask(pid, taskId, statusEl, pfillEl, resultEl, 'text');
     } catch (e) {
       statusEl.textContent = `✗ ${e.message}`;
     }
   }
 
-  function _pollMeshyTask(pid, taskId, statusEl, pfillEl, resultEl) {
+  async function startMeshyFromImage(pid, imageUrl) {
+    const statusEl = document.getElementById(`status_${pid}`);
+    const pbarEl   = document.getElementById(`pbar_${pid}`);
+    const pfillEl  = document.getElementById(`pfill_${pid}`);
+    const resultEl = document.getElementById(`result_${pid}`);
+    if (!imageUrl) { statusEl.textContent = 'No image available for this model.'; return; }
+    statusEl.textContent = '⏳ Submitting image to Meshy AI…';
+    pbarEl.style.display = 'block';
+    pfillEl.style.width  = '0%';
+    resultEl.innerHTML   = '';
+    try {
+      const r = await fetch('/meshy/image-to-3d', {
+        method: 'POST',
+        headers: { ...apiHeaders(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ image_url: imageUrl }),
+      });
+      if (!r.ok) { const e = await r.json().catch(() => ({})); throw new Error(e.detail || `HTTP ${r.status}`); }
+      const j      = await r.json();
+      const taskId = j.data?.task_id;
+      if (!taskId) { statusEl.textContent = '✗ No task ID returned'; return; }
+      statusEl.textContent = `⏳ Image-to-3D started (${taskId.slice(0, 8)}…)`;
+      _pollMeshyTask(pid, taskId, statusEl, pfillEl, resultEl, 'image');
+    } catch (e) {
+      statusEl.textContent = `✗ ${e.message}`;
+    }
+  }
+
+  function _pollMeshyTask(pid, taskId, statusEl, pfillEl, resultEl, taskType = 'text') {
     if (_meshyPollers[pid]) clearInterval(_meshyPollers[pid]);
     _meshyPollers[pid] = setInterval(async () => {
       try {
-        const r    = await fetch(`/meshy/task/${taskId}`, { headers: apiHeaders() });
+        const r    = await fetch(`/meshy/task/${taskId}?type=${taskType}`, { headers: apiHeaders() });
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         const j    = await r.json();
         const data = j.data || {};
