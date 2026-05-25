@@ -238,6 +238,12 @@ class ResearchAgent:
                 if tid and tid not in tv_seen:
                     tv_seen.add(tid)
                     thingiverse_things.append(t)
+        # Relevance filter for product research TV results
+        pr_query_words = {w.lower() for w in search_query.split() if len(w) > 2}
+        if pr_query_words:
+            tv_relevant = [t for t in thingiverse_things if _model_matches_query(t, pr_query_words)]
+            if len(tv_relevant) >= min(3, len(thingiverse_things) // 2 + 1):
+                thingiverse_things = tv_relevant
         thingiverse_things.sort(key=lambda t: t.get("likes", 0) + t.get("downloads", 0) // 10, reverse=True)
         thingiverse_things = thingiverse_things[:limit]  # honour the slider
 
@@ -325,6 +331,21 @@ class ResearchAgent:
                 if tid and tid not in tv_seen:
                     tv_seen.add(tid)
                     things.append(t)
+
+        # Relevance filter — discard models whose name+tags share no words with the search query.
+        # This catches globally popular models (benchie, whistle, sundial) that Thingiverse
+        # surfaces when sort overrides relevance.
+        query_words = {w.lower() for w in search_query.split() if len(w) > 2}
+        if query_words:
+            relevant = [
+                t for t in things
+                if _model_matches_query(t, query_words)
+            ]
+            # Only apply if we keep a reasonable fraction — don't wipe everything
+            if len(relevant) >= min(3, len(things) // 2 + 1):
+                things = relevant
+            else:
+                logger.info("Relevance filter kept only %d/%d — keeping all", len(relevant), len(things))
 
         # Apply date filter if requested
         cutoff_date:   str  = ""
@@ -922,6 +943,16 @@ def _collect_sources(name: str, args: dict, result: Any, sources: list) -> None:
         sources.append({"type": "thingiverse", "query": args.get("query", ""), "url": "https://www.thingiverse.com"})
     elif name in ("ebay_search", "ebay_sold_data") and isinstance(result, dict) and not result.get("error"):
         sources.append({"type": "ebay", "query": args.get("query", "")})
+
+
+def _model_matches_query(model: dict, query_words: set[str]) -> bool:
+    """
+    Return True if the model's name or tags contain at least one query word.
+    Prevents globally popular models (benchie, whistle) from appearing when they
+    have nothing to do with the searched topic.
+    """
+    searchable = (model.get("name", "") + " " + " ".join(model.get("tags", []))).lower()
+    return any(qw in searchable for qw in query_words)
 
 
 def _tv_term_is_relevant(term: str, query: str) -> bool:

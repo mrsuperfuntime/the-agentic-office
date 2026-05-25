@@ -249,19 +249,20 @@ class ResearchTools:
 
     # ── Thingiverse ──────────────────────────────────────────────────────
 
-    def thingiverse_search(self, query: str, limit: int = 8, sort: str = "popular") -> dict:
+    def thingiverse_search(self, query: str, limit: int = 8, sort: str = "relevant") -> dict:
         if not self.thingiverse_token:
             return {
                 "error": "Thingiverse token not configured",
                 "hint":  "Set THINGIVERSE_TOKEN in .env — get it at https://www.thingiverse.com/developers",
             }
-        valid_sorts = {"popular", "newest", "makes", "derivatives"}
-        sort = sort if sort in valid_sorts else "popular"
+        # Always fetch by relevance from the API — the caller sorts client-side.
+        # Sending sort=popular/makes overrides relevance and returns globally trending
+        # models regardless of the search query (benchie, whistle, etc. for any query).
         try:
             resp = self._session.get(
                 f"https://api.thingiverse.com/search/{url_quote(query)}",
                 headers={"Authorization": f"Bearer {self.thingiverse_token}"},
-                params={"per_page": min(max(1, limit), 20), "page": 1, "type": "things", "sort": sort},
+                params={"per_page": min(max(1, limit), 20), "page": 1, "type": "things"},
                 timeout=15,
             )
             if resp.status_code == 401:
