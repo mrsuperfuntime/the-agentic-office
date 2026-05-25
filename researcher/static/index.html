@@ -1682,9 +1682,13 @@
         </div>
         <div class="model-pop-bar"><div class="model-pop-fill" style="width:${pct}%"></div></div>
         <div class="model-stats">
-          ${t.downloads > 0 ? `<span class="model-stat-dl" title="Downloads">⬇ ${t.downloads.toLocaleString()}</span>` : ''}
-          ${t.likes     > 0 ? `<span class="model-stat-lk" title="Likes">♥ ${t.likes.toLocaleString()}</span>`         : ''}
-          ${t.makes     > 0 ? `<span class="model-stat-mk" title="Makes — people actually printed this">🖨 ${t.makes.toLocaleString()} made</span>` : ''}
+          ${t.makes     > 0 ? `<span class="model-stat-mk" title="Makes — people actually printed this">🖨 ${t.makes.toLocaleString()} made</span>`     : ''}
+          ${t.downloads > 0 ? `<span class="model-stat-dl" title="Downloads">⬇ ${t.downloads.toLocaleString()}</span>`                                    : ''}
+          ${t.likes     > 0 ? `<span class="model-stat-lk" title="Likes">♥ ${t.likes.toLocaleString()}</span>`                                            : ''}
+          ${t.views     > 0 ? `<span style="color:var(--text-muted);font-size:.95em" title="Views">👁 ${t.views.toLocaleString()}</span>`                  : ''}
+          ${t.remixes   > 0 ? `<span style="color:var(--accent2)" title="Remixes/derivatives">🔀 ${t.remixes.toLocaleString()}</span>`                    : ''}
+          ${t.comments  > 0 ? `<span style="color:var(--text-muted);font-size:.95em" title="Comments">💬 ${t.comments.toLocaleString()}</span>`            : ''}
+          ${t.collects  > 0 ? `<span style="color:var(--text-muted);font-size:.95em" title="Collections">⊕ ${t.collects.toLocaleString()}</span>`          : ''}
         </div>
         ${tags ? `<div class="model-tags">${tags}</div>` : ''}
         <div class="model-actions">
@@ -1837,10 +1841,12 @@
       <div style="flex:1;min-width:0">
         <a class="src-link" href="${url}" target="_blank" rel="noopener" style="font-size:.82em;font-weight:700">${esc(t.name || 'Untitled')}</a>
         <div style="font-size:.7em;color:var(--text-muted);margin-top:3px;display:flex;gap:12px;align-items:center;flex-wrap:wrap">
-          <span title="Likes">♥ ${likes.toLocaleString()}</span>
+          ${makes     > 0 ? `<span title="Makes" style="color:var(--success);font-weight:700">🖨 ${makes.toLocaleString()} made</span>` : ''}
           ${downloads > 0 ? `<span title="Downloads" style="color:var(--accent2)">⬇ ${downloads.toLocaleString()}</span>` : ''}
-          ${makes     > 0 ? `<span title="Makes" style="color:var(--success)">🖨 ${makes.toLocaleString()}</span>` : ''}
-          <span title="Collects">⊕ ${collects.toLocaleString()}</span>
+          <span title="Likes">♥ ${likes.toLocaleString()}</span>
+          ${(t.views    || 0) > 0 ? `<span title="Views">👁 ${(t.views).toLocaleString()}</span>` : ''}
+          ${(t.remixes  || 0) > 0 ? `<span title="Remixes" style="color:var(--accent2)">🔀 ${(t.remixes).toLocaleString()}</span>` : ''}
+          ${t.added ? `<span title="Uploaded">📅 ${esc(t.added)}</span>` : ''}
           ${t.creator ? `<span>by ${esc(t.creator)}</span>` : ''}
           ${tags}
         </div>

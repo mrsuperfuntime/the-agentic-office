@@ -347,6 +347,11 @@ class ResearchAgent:
             else:
                 logger.info("Relevance filter kept only %d/%d — keeping all", len(relevant), len(things))
 
+        # Enrich every result with full stats + dates via concurrent /things/{id} calls.
+        # The search endpoint returns summary objects only — dates and accurate counts
+        # (views, remixes, etc.) require the detail endpoint.
+        things = self.tools.thingiverse_enrich_dates(things)
+
         # Apply date filter if requested
         cutoff_date:   str  = ""
         date_filter_skipped = False

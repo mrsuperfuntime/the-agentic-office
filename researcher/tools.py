@@ -6,6 +6,7 @@ import base64
 import logging
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 from urllib.parse import quote as url_quote
 
@@ -248,6 +249,61 @@ class ResearchTools:
             return {"topic": topic, "error": str(e)}
 
     # ── Thingiverse ──────────────────────────────────────────────────────
+
+    def _thingiverse_thing_detail(self, thing_id: int) -> dict:
+        """Fetch full detail for one Thingiverse thing — dates + all stats."""
+        try:
+            resp = self._session.get(
+                f"https://api.thingiverse.com/things/{thing_id}",
+                headers={"Authorization": f"Bearer {self.thingiverse_token}"},
+                timeout=8,
+            )
+            if resp.status_code == 200:
+                return resp.json()
+        except Exception:
+            pass
+        return {}
+
+    def thingiverse_enrich_dates(self, things: list[dict], max_workers: int = 8) -> list[dict]:
+        """
+        Batch-fetch full thing details for all results concurrently.
+        Populates: added date, view_count, remix_count, comment_count, and
+        verifies like/download/makes counts from the authoritative detail endpoint.
+        """
+        if not things:
+            return things
+
+        logger.info("Enriching %d things with full details (concurrent)", len(things))
+        detail_map: dict[int, dict] = {}
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            futures = {pool.submit(self._thingiverse_thing_detail, t["id"]): t["id"]
+                       for t in things if t.get("id")}
+            for future in as_completed(futures):
+                tid = futures[future]
+                try:
+                    detail_map[tid] = future.result()
+                except Exception:
+                    detail_map[tid] = {}
+
+        for t in things:
+            d = detail_map.get(t.get("id"), {})
+            if not d:
+                continue
+            # Dates
+            raw_date = d.get("added") or d.get("created_at") or d.get("published_at") or ""
+            t["added"] = raw_date[:10]
+            # Richer stats from authoritative source
+            t["likes"]     = int(d.get("like_count",     t.get("likes",     0)) or 0)
+            t["downloads"] = int(d.get("download_count", t.get("downloads", 0)) or 0)
+            t["makes"]     = int(d.get("makes_count",    t.get("makes",     0)) or 0)
+            t["comments"]  = int(d.get("comment_count",  t.get("comments",  0)) or 0)
+            t["views"]     = int(d.get("view_count",     0) or 0)
+            t["remixes"]   = int(d.get("remix_count",    0) or 0)
+            t["collects"]  = int(d.get("collect_count",  t.get("collects",  0)) or 0)
+
+        found = sum(1 for d in detail_map.values() if d)
+        logger.info("Enrichment complete: %d/%d things returned detail", found, len(things))
+        return things
 
     def thingiverse_search(self, query: str, limit: int = 8, sort: str = "relevant") -> dict:
         if not self.thingiverse_token:
