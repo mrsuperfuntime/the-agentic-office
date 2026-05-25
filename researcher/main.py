@@ -126,7 +126,7 @@ class MeshyImageRequest(BaseModel):
 class ScheduleCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=80)
     query: str = Field(..., min_length=3)
-    mode: str = Field(default="research", pattern="^(research|products|quick)$")
+    mode: str = Field(default="research", pattern="^(research|products|3d|quick)$")
     schedule_type: str = Field(..., pattern="^(daily|weekly|interval)$")
     schedule_time: str | None = Field(default=None, description="HH:MM in UTC, required for daily/weekly")
     schedule_days: list[str] | None = Field(default=None, description="Days for weekly, e.g. ['mon','fri']")
