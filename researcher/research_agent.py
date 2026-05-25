@@ -167,24 +167,28 @@ class ResearchAgent:
           4. LLM batch recreation scoring with Meshy AI prompts
           5. Ranked product cards + summary
         """
-        started_at = datetime.now(timezone.utc).isoformat()
+        started_at   = datetime.now(timezone.utc).isoformat()
+        search_query = _extract_search_query(query)
+        if search_query != query:
+            logger.info("Query cleaned: %r → %r", query, search_query)
 
-        # Step 1: eBay active listings
-        ebay_result = self.tools.ebay_search(query, limit=limit)
+        # Step 1: eBay active listings (use cleaned keyword query)
+        ebay_result = self.tools.ebay_search(search_query, limit=limit)
         items       = ebay_result.get("items", [])
         ebay_error  = ebay_result.get("error")
+        if ebay_error:
+            logger.warning("eBay search error for %r: %s", search_query, ebay_error)
 
         # Step 2: Thingiverse models
-        thingiverse_result = self.tools.thingiverse_search(query, limit=8, sort="popular")
+        thingiverse_result = self.tools.thingiverse_search(search_query, limit=8, sort="popular")
         thingiverse_things = thingiverse_result.get("things", [])
         thingiverse_error  = thingiverse_result.get("error")
         if thingiverse_error:
             logger.info("Thingiverse: %s", thingiverse_error)
 
-        # Step 3: Real eBay sold data (Finding API)
+        # Step 3: Real eBay sold data (Finding API, same cleaned query)
         sold_data: dict = {}
-        if items or not ebay_error:
-            sold_data = self.tools.ebay_sold_data(query, timeframe_days=timeframe_days)
+        sold_data = self.tools.ebay_sold_data(search_query, timeframe_days=timeframe_days)
 
         # Step 4: Web context
         web_context = self.tools.web_search(
@@ -211,11 +215,13 @@ class ResearchAgent:
 
         # Step 6: LLM summary with real metrics
         summary = self._generate_product_summary(
-            query, scored_items, sold_data, thingiverse_things, timeframe_days
+            query, scored_items, sold_data, thingiverse_things, timeframe_days,
+            ebay_error=ebay_error, search_query=search_query,
         )
 
         return {
             "query":             query,
+            "search_query":      search_query,
             "timeframe_days":    timeframe_days,
             "summary":           summary,
             "ranked_products":   scored_items,
@@ -322,9 +328,21 @@ class ResearchAgent:
         sold_data: dict,
         thingiverse_things: list[dict] | None = None,
         timeframe_days: int = 30,
+        ebay_error: str | None = None,
+        search_query: str | None = None,
     ) -> str:
         if not products:
-            return f"No eBay listings found for '{query}'. Try a different search term or check eBay API credentials."
+            sq = search_query or query
+            if ebay_error:
+                return (
+                    f"eBay API error for '{sq}': {ebay_error}\n\n"
+                    f"Check that EBAY_APP_ID and EBAY_CERT_ID are set correctly in .env on Chauncy, "
+                    f"then run: `sudo systemctl restart researcher`"
+                )
+            return (
+                f"No eBay listings found for '{sq}'. "
+                f"Try a more specific product name (e.g. 'mandalorian figure' instead of a full sentence)."
+            )
 
         top3 = products[:3]
         top_titles = "\n".join(
@@ -546,6 +564,32 @@ def _collect_sources(name: str, args: dict, result: Any, sources: list) -> None:
         sources.append({"type": "thingiverse", "query": args.get("query", ""), "url": "https://www.thingiverse.com"})
     elif name in ("ebay_search", "ebay_sold_data") and isinstance(result, dict) and not result.get("error"):
         sources.append({"type": "ebay", "query": args.get("query", "")})
+
+
+def _extract_search_query(query: str) -> str:
+    """Strip conversational framing to get a clean product keyword search."""
+    q = query.strip()
+    # Remove leading instruction phrases
+    q = re.sub(
+        r'^(?:tell me(?: about)?|find me|show me|give me|what are|what is|list|find|'
+        r'search for|look for|look up|research|get me|i want to see)\s+',
+        '', q, flags=re.IGNORECASE,
+    ).strip()
+    # Remove "top N" / "best N" prefix
+    q = re.sub(
+        r'^(?:the\s+)?(?:top|best|popular|trending|most popular)\s+\d+\s+',
+        '', q, flags=re.IGNORECASE,
+    ).strip()
+    q = re.sub(
+        r'^(?:the\s+)?(?:top|best|popular|trending|hottest|newest)\s+',
+        '', q, flags=re.IGNORECASE,
+    ).strip()
+    # Remove trailing filler words
+    q = re.sub(
+        r'\s+(?:for me|please|items?|products?|things?|listings?|on ebay|available)\.?$',
+        '', q, flags=re.IGNORECASE,
+    ).strip()
+    return q if len(q) >= 3 else query
 
 
 def _dedupe_sources(sources: list) -> list:

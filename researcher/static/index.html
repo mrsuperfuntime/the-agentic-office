@@ -1331,7 +1331,14 @@
     ).join('');
 
     // LLM narrative
-    document.getElementById('productSummaryEl').innerHTML = summary ? marked.parse(summary) : '';
+    let summaryHtml = summary ? marked.parse(summary) : '';
+    if (data.ebay_error) {
+      summaryHtml = `<div style="color:var(--error);font-size:.82em;margin-bottom:12px">⚠ eBay API error: ${esc(data.ebay_error)}</div>` + summaryHtml;
+    }
+    if (data.search_query && data.search_query !== data.query) {
+      summaryHtml = `<div style="color:var(--text-muted);font-size:.72em;margin-bottom:10px">Searched eBay for: <span style="color:var(--accent)">${esc(data.search_query)}</span></div>` + summaryHtml;
+    }
+    document.getElementById('productSummaryEl').innerHTML = summaryHtml;
 
     // Thingiverse related models
     const things = data.thingiverse || [];
