@@ -470,21 +470,23 @@ class ResearchAgent:
             use_tools=False,
         )
         content = (resp or {}).get("message", {}).get("content", "")
+        parsed: list[str] = []
         try:
-            terms = json.loads(content.strip())
-            if isinstance(terms, list):
-                clean = [_clean_tv_term(str(t)) for t in terms if str(t).strip()]
-                clean = [t for t in clean if len(t) >= 3]
-                if clean:
-                    return clean[:n]
+            r = json.loads(content.strip())
+            if isinstance(r, list):
+                parsed = r
         except Exception:
-            pass
-        arr = _extract_json_array(content)
-        if arr:
-            clean = [_clean_tv_term(str(t)) for t in arr if str(t).strip()]
-            clean = [t for t in clean if len(t) >= 3]
-            if clean:
-                return clean[:n]
+            parsed = _extract_json_array(content)
+
+        if parsed:
+            clean = [_clean_tv_term(str(t)) for t in parsed if str(t).strip()]
+            # For product-research TV terms, category words (baseball, etc.) are valid even if
+            # they don't match the original query — so we use a looser check: keep anything
+            # that isn't completely random (at least one word > 3 chars).
+            valid = [t for t in clean if len(t) >= 3 and any(len(w) > 3 for w in t.split())]
+            if valid:
+                return valid[:n]
+
         logger.warning("Thingiverse query expansion failed for %r, using original", query)
         return [query]
 
@@ -528,23 +530,33 @@ class ResearchAgent:
             use_tools=False,
         )
         content = (resp or {}).get("message", {}).get("content", "")
-        try:
-            terms = json.loads(content.strip())
-            if isinstance(terms, list):
-                clean = [_clean_tv_term(str(t)) for t in terms if str(t).strip()]
-                clean = [t for t in clean if len(t) >= 3]
-                if clean:
-                    return clean[:n]
-        except Exception:
-            pass
-        arr = _extract_json_array(content)
-        if arr:
-            clean = [_clean_tv_term(str(t)) for t in arr if str(t).strip()]
-            clean = [t for t in clean if len(t) >= 3]
-            if clean:
-                return clean[:n]
-        logger.warning("3D model query expansion failed for %r, using fallback", query)
-        return [query, f"{query} figure", f"{query} prop"]
+        parsed: list[str] = []
+        for attempt in [content, _strip_fence(content)]:
+            try:
+                r = json.loads(attempt.strip())
+                if isinstance(r, list):
+                    parsed = r
+                    break
+            except Exception:
+                pass
+        if not parsed:
+            m = re.search(r'\[[\s\S]*?\]', content)
+            if m:
+                try:
+                    parsed = json.loads(m.group(0))
+                except Exception:
+                    pass
+
+        if parsed:
+            clean = [_clean_tv_term(str(t)) for t in parsed if str(t).strip()]
+            # Validate: every kept term must share at least one meaningful word with the query.
+            # This catches LLM hallucinations (e.g. "penis" → "quad copter").
+            valid = [t for t in clean if _tv_term_is_relevant(t, query) and len(t) >= 3]
+            if valid:
+                return valid[:n]
+
+        logger.warning("3D model query expansion produced no valid terms for %r, using suffix fallback", query)
+        return _tv_suffix_fallback(query, n)
 
     # ── Cross-platform opportunity scoring ───────────────────────────────────
 
@@ -910,6 +922,23 @@ def _collect_sources(name: str, args: dict, result: Any, sources: list) -> None:
         sources.append({"type": "thingiverse", "query": args.get("query", ""), "url": "https://www.thingiverse.com"})
     elif name in ("ebay_search", "ebay_sold_data") and isinstance(result, dict) and not result.get("error"):
         sources.append({"type": "ebay", "query": args.get("query", "")})
+
+
+def _tv_term_is_relevant(term: str, query: str) -> bool:
+    """
+    Check that a generated Thingiverse term is actually related to the original query.
+    Require at least one query word (>2 chars) to appear in the generated term.
+    This blocks LLM hallucinations like 'penis' → 'quad copter'.
+    """
+    query_words = {w for w in query.lower().split() if len(w) > 2}
+    term_lower  = term.lower()
+    return any(qw in term_lower for qw in query_words)
+
+
+def _tv_suffix_fallback(query: str, n: int) -> list[str]:
+    """Safe fallback: append common Thingiverse object types to the raw query."""
+    suffixes = ["figure", "prop", "stand", "bust", "display", "holder", "keychain", "organizer"]
+    return [f"{query} {s}" for s in suffixes[:n]]
 
 
 _TV_META = re.compile(
