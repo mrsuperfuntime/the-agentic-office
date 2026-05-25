@@ -14,7 +14,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -395,6 +395,75 @@ async def meshy_task_status(task_id: str, type: str = "text"):
 async def meshy_status():
     """Returns whether Meshy AI is configured."""
     return {"configured": meshy.configured()}
+
+
+@app.get("/meshy/download-stl")
+async def meshy_download_stl(url: str, filename: str = "model.stl"):
+    """
+    Download a Meshy model (OBJ or GLB) and convert it to STL on the fly.
+    Pass ?url=<meshy_model_url>&filename=my_model.stl
+    """
+    import requests as req
+    try:
+        import trimesh
+    except ImportError:
+        raise HTTPException(500, "trimesh not installed — run: pip install trimesh numpy")
+
+    if not filename.endswith(".stl"):
+        filename += ".stl"
+
+    try:
+        r = req.get(url, timeout=30)
+        if r.status_code != 200:
+            raise HTTPException(502, f"Failed to download model: HTTP {r.status_code}")
+
+        # Detect format from URL or content-type
+        content_type = r.headers.get("content-type", "")
+        if "obj" in url.lower() or "obj" in content_type:
+            file_type = "obj"
+        elif "fbx" in url.lower():
+            file_type = "fbx"
+        else:
+            file_type = "glb"
+
+        import io
+        mesh = trimesh.load(io.BytesIO(r.content), file_type=file_type, force="mesh")
+        stl_bytes = mesh.export(file_type="stl")
+
+        safe_name = "".join(c for c in filename if c.isalnum() or c in "._-")
+        return Response(
+            content=stl_bytes,
+            media_type="model/stl",
+            headers={"Content-Disposition": f'attachment; filename="{safe_name}"'},
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("STL conversion error: %s", e)
+        raise HTTPException(500, f"STL conversion failed: {e}")
+
+
+@app.get("/meshy/test-image")
+async def meshy_test_image(url: str):
+    """
+    Diagnostic: check that a given image URL is reachable and is a valid image.
+    Use this to verify Thingiverse CDN thumbnails are accessible before submitting to Meshy.
+    """
+    import requests as req
+    try:
+        r = req.head(url, timeout=8, allow_redirects=True)
+        content_type = r.headers.get("content-type", "")
+        is_image = content_type.startswith("image/")
+        return {
+            "url":          url,
+            "reachable":    r.status_code == 200,
+            "status_code":  r.status_code,
+            "content_type": content_type,
+            "is_image":     is_image,
+            "ready_for_meshy": r.status_code == 200 and is_image,
+        }
+    except Exception as e:
+        return {"url": url, "reachable": False, "error": str(e)}
 
 
 @app.post("/handle-request")

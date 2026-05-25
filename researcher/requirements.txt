@@ -8,3 +8,5 @@ lxml==6.1.1
 python-dotenv==1.2.2
 aiofiles==25.1.0
 apscheduler==3.10.4
+trimesh==4.6.7
+numpy==2.2.6

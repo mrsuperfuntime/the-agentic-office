@@ -1750,7 +1750,8 @@
           </div>
           <div style="display:flex;gap:6px;flex-wrap:wrap">
             ${thumb ? `<button class="prod-btn" style="color:var(--success);border-color:rgba(6,214,160,.4);flex:1"
-              onclick="startMeshyFromImage('${pid}', '${thumb}')">🖼 FROM IMAGE</button>` : ''}
+              data-pid="${pid}" data-thumb="${thumb}"
+              onclick="startMeshyFromImage(this)">🖼 FROM IMAGE</button>` : ''}
             <button class="prod-btn" style="color:var(--accent);border-color:rgba(0,180,216,.4);flex:2"
               onclick="startMeshyGeneration('${pid}')">✦ FROM TEXT</button>
           </div>
@@ -1972,7 +1973,9 @@
     }
   }
 
-  async function startMeshyFromImage(pid, imageUrl) {
+  async function startMeshyFromImage(btn) {
+    const pid      = btn.dataset.pid;
+    const imageUrl = btn.dataset.thumb;
     const statusEl = document.getElementById(`status_${pid}`);
     const pbarEl   = document.getElementById(`pbar_${pid}`);
     const pfillEl  = document.getElementById(`pfill_${pid}`);
@@ -2028,19 +2031,39 @@
   }
 
   function _showMeshyResult(pid, taskId, data, resultEl) {
-    const urls    = data.model_urls || {};
-    const dlLinks = ['glb', 'fbx', 'obj', 'usdz'].filter(f => urls[f]).map(f =>
+    const urls = data.model_urls || {};
+
+    // Direct download links for each format Meshy provides
+    const fmtLinks = ['glb', 'fbx', 'obj', 'usdz'].filter(f => urls[f]).map(f =>
       `<a class="meshy-dl-btn" href="${esc(urls[f])}" download target="_blank">${f.toUpperCase()}</a>`
     ).join('');
+
+    // STL conversion links — one per convertible format (obj preferred, then glb)
+    const stlSource = urls['obj'] || urls['glb'] || '';
+    const modelName = pid.replace('mp3d_', 'model_');
+    const stlBtn = stlSource
+      ? `<a class="meshy-dl-btn" style="background:rgba(6,214,160,.1);border-color:rgba(6,214,160,.6);color:var(--success);font-weight:700"
+           href="/meshy/download-stl?url=${encodeURIComponent(stlSource)}&filename=${modelName}.stl"
+           download target="_blank">⬇ STL</a>`
+      : '';
+
     const refineBtn = `<button class="meshy-dl-btn" style="cursor:pointer"
-      onclick="_startRefine('${pid}','${taskId}')">✦ REFINE (HD)</button>`;
+      data-pid="${pid}" data-task="${taskId}"
+      onclick="_startRefine(this)">✦ REFINE (HD)</button>`;
+
     resultEl.innerHTML = `<div class="meshy-result">
       ${data.thumbnail_url ? `<img src="${esc(data.thumbnail_url)}" alt="Meshy preview">` : ''}
-      <div class="meshy-dl-links">${dlLinks}${refineBtn}</div>
+      <div class="meshy-dl-links">${stlBtn}${fmtLinks}${refineBtn}</div>
     </div>`;
   }
 
-  async function _startRefine(pid, previewTaskId) {
+  async function _startRefine(btn) {
+    const pid           = btn.dataset.pid;
+    const previewTaskId = btn.dataset.task;
+    return _startRefineById(pid, previewTaskId);
+  }
+
+  async function _startRefineById(pid, previewTaskId) {
     const statusEl = document.getElementById(`status_${pid}`);
     const pfillEl  = document.getElementById(`pfill_${pid}`);
     const resultEl = document.getElementById(`result_${pid}`);
