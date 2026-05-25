@@ -302,12 +302,13 @@ class ResearchAgent:
         tv_terms  = [search_query] + [t for t in expanded if t.lower() != search_query.lower()]
         logger.info("3D model search terms: %s (days_ago=%d)", tv_terms, days_ago)
 
-        # When filtering by recent date, fetch more per term to ensure enough survive the filter
+        # When a date filter is active, always fetch as "newest" so recent items surface first.
+        # We re-sort by the user's chosen metric after date-filtering.
+        effective_sort = "newest" if days_ago > 0 else sort
+
+        # Fetch more per term when filtering so enough survive the date cut
         fetch_multiplier = 3 if days_ago > 0 else 1
         per_term  = min(20, max(4, limit // max(len(tv_terms), 1) + 3) * fetch_multiplier)
-
-        # Use "newest" sort when filtering by recent date so we surface recent items first
-        effective_sort = "newest" if days_ago > 0 and sort == "popular" else sort
 
         things:   list[dict] = []
         tv_seen:  set        = set()
@@ -326,19 +327,37 @@ class ResearchAgent:
                     things.append(t)
 
         # Apply date filter if requested
-        cutoff_date: str = ""
+        cutoff_date:   str  = ""
+        date_filter_skipped = False
         if days_ago > 0:
             from datetime import timedelta
-            cutoff = datetime.now(timezone.utc) - timedelta(days=days_ago)
+            cutoff      = datetime.now(timezone.utc) - timedelta(days=days_ago)
             cutoff_date = cutoff.strftime("%Y-%m-%d")
-            things = [t for t in things if t.get("added", "") >= cutoff_date]
-            logger.info("Date filter (%s+): %d models remaining", cutoff_date, len(things))
 
-        # Composite popularity score: makes > likes > downloads
-        things.sort(
-            key=lambda t: t.get("makes", 0) * 10 + t.get("likes", 0) * 5 + t.get("downloads", 0) * 2,
-            reverse=True,
-        )
+            dated   = [t for t in things if t.get("added", "") >= cutoff_date]
+            undated = [t for t in things if not t.get("added")]
+            logger.info("Date filter (%s+): %d dated, %d undated, %d too old",
+                        cutoff_date, len(dated), len(undated), len(things) - len(dated) - len(undated))
+
+            if len(dated) >= 3:
+                things = dated
+            elif things:
+                # Not enough date-tagged results — keep everything and warn
+                date_filter_skipped = True
+                logger.warning("Too few dated results (%d) — returning all %d unfiltered", len(dated), len(things))
+
+        # Re-sort by user's chosen metric after any date filtering
+        if sort == "makes":
+            things.sort(key=lambda t: t.get("makes", 0), reverse=True)
+        elif sort == "derivatives":
+            things.sort(key=lambda t: t.get("collects", 0), reverse=True)
+        elif sort == "newest":
+            things.sort(key=lambda t: t.get("added", ""), reverse=True)
+        else:  # popular or fallback
+            things.sort(
+                key=lambda t: t.get("makes", 0) * 10 + t.get("likes", 0) * 5 + t.get("downloads", 0) * 2,
+                reverse=True,
+            )
         things = things[:limit]
 
         # eBay market reference — what does this category sell for?
@@ -351,8 +370,9 @@ class ResearchAgent:
             "search_query":      search_query,
             "tv_terms":          tv_terms,
             "sort":              sort,
-            "days_ago":          days_ago,
-            "cutoff_date":       cutoff_date,
+            "days_ago":            days_ago,
+            "cutoff_date":         cutoff_date,
+            "date_filter_skipped": date_filter_skipped,
             "things":            things,
             "total":             len(things),
             "ebay_price_ref":    price_range,

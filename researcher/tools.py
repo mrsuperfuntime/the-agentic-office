@@ -291,7 +291,10 @@ class ResearchTools:
                     "comments":      int(t.get("comment_count", 0) or 0),
                     "tags":          tags,
                     "is_printable":  bool(t.get("is_printable", True)),
-                    "added":         (t.get("added") or t.get("created_at") or "")[:10],
+                    "added":         (
+                        t.get("added") or t.get("created_at") or
+                        t.get("published_at") or t.get("modified") or ""
+                    )[:10],
                 })
 
             return {

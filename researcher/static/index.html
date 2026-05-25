@@ -1618,12 +1618,19 @@
       const chips = tvTerms.map(t => `<span style="background:var(--surface3);border:1px solid rgba(6,214,160,.3);border-radius:10px;padding:1px 8px;font-size:.75em;color:var(--success)">${esc(t)}</span>`).join(' ');
       metaHtml += `<div style="color:var(--text-muted);font-size:.72em;margin-bottom:6px;display:flex;align-items:center;gap:6px;flex-wrap:wrap">🖨 searched: ${chips}</div>`;
     }
-    if (data.days_ago > 0 && data.cutoff_date) {
+    if (data.days_ago > 0) {
       const sinceLabels = { 1: 'Last 24h', 7: 'Last 7 days', 14: 'Last 14 days', 30: 'Last 30 days', 90: 'Last 90 days' };
       const label = sinceLabels[data.days_ago] || `Last ${data.days_ago} days`;
-      metaHtml += `<div style="font-size:.72em;color:var(--text-muted);margin-bottom:10px;display:flex;align-items:center;gap:6px">
-        📅 Date filter: <span style="background:rgba(6,214,160,.1);border:1px solid rgba(6,214,160,.3);border-radius:10px;padding:1px 8px;color:var(--success)">${label} — added after ${esc(data.cutoff_date)}</span>
-        ${things.length === 0 ? '<span style="color:var(--warning)">No models found in this window — try a wider range</span>' : ''}
+      let filterNote = '';
+      if (data.date_filter_skipped) {
+        filterNote = `<span style="color:var(--warning)">⚠ Thingiverse doesn't return upload dates for these results — showing all matches, sorted by ${esc(data.sort)}</span>`;
+      } else if (things.length === 0) {
+        filterNote = `<span style="color:var(--warning)">No models found in this window — try a wider date range</span>`;
+      } else if (data.cutoff_date) {
+        filterNote = `<span style="background:rgba(6,214,160,.1);border:1px solid rgba(6,214,160,.3);border-radius:10px;padding:1px 8px;color:var(--success)">added after ${esc(data.cutoff_date)} · sorted by ${esc(data.sort)}</span>`;
+      }
+      metaHtml += `<div style="font-size:.72em;color:var(--text-muted);margin-bottom:10px;display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+        📅 ${label}: ${filterNote}
       </div>`;
     }
     if (ebayError) {
