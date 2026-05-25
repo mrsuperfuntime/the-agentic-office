@@ -1044,17 +1044,24 @@
 
   // ── API status chips ────────────────────────────────────────────────────
   async function checkStatus() {
+    const chips = document.getElementById('apiChips');
+    chips.innerHTML = '<span class="api-chip off">checking...</span>';
     try {
-      const r = await fetch('/status');
+      const r = await fetch('/status/apis');
       const d = await r.json();
-      const chips = document.getElementById('apiChips');
+      const apis = d.data || {};
       chips.innerHTML = [
-        ['EBAY',        d.ebay_configured],
-        ['THINGIVERSE', d.thingiverse_configured],
-      ].map(([label, ok]) =>
-        `<span class="api-chip ${ok ? 'ok' : 'off'}">${label}</span>`
-      ).join('');
-    } catch {}
+        ['EBAY',        apis.ebay],
+        ['THINGIVERSE', apis.thingiverse],
+      ].map(([label, info]) => {
+        const ok     = info?.ok === true;
+        const reason = info?.reason || '';
+        const title  = ok ? `${label} connected` : `${label} offline${reason ? ': ' + reason : ''}`;
+        return `<span class="api-chip ${ok ? 'ok' : 'off'}" title="${esc(title)}">${label}</span>`;
+      }).join('');
+    } catch {
+      chips.innerHTML = '';
+    }
   }
 
   // ── Mode toggle ─────────────────────────────────────────────────────────

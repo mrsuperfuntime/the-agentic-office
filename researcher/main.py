@@ -150,6 +150,60 @@ async def health():
     }
 
 
+@app.get("/status/apis")
+async def api_status():
+    """Live connection test for each configured API."""
+    import base64, requests as req
+
+    results = {}
+
+    # ── Thingiverse ───────────────────────────────────────────────────────────
+    tv_token = os.getenv("THINGIVERSE_TOKEN", "").strip()
+    if not tv_token:
+        results["thingiverse"] = {"ok": False, "reason": "not configured"}
+    else:
+        try:
+            r = req.get(
+                "https://api.thingiverse.com/search/test",
+                headers={"Authorization": f"Bearer {tv_token}"},
+                params={"per_page": 1, "page": 1},
+                timeout=8,
+            )
+            if r.status_code in (200, 404):
+                results["thingiverse"] = {"ok": True}
+            elif r.status_code in (401, 403):
+                results["thingiverse"] = {"ok": False, "reason": "token invalid or expired"}
+            else:
+                results["thingiverse"] = {"ok": False, "reason": f"HTTP {r.status_code}"}
+        except Exception as e:
+            results["thingiverse"] = {"ok": False, "reason": str(e)[:80]}
+
+    # ── eBay ──────────────────────────────────────────────────────────────────
+    ebay_id   = os.getenv("EBAY_APP_ID",  "").strip()
+    ebay_cert = os.getenv("EBAY_CERT_ID", "").strip()
+    ebay_env  = os.getenv("EBAY_ENV", "production").lower()
+    if not ebay_id or not ebay_cert:
+        results["ebay"] = {"ok": False, "reason": "not configured"}
+    else:
+        try:
+            base  = "https://api.sandbox.ebay.com" if ebay_env == "sandbox" else "https://api.ebay.com"
+            creds = base64.b64encode(f"{ebay_id}:{ebay_cert}".encode()).decode()
+            r = req.post(
+                f"{base}/identity/v1/oauth2/token",
+                headers={"Authorization": f"Basic {creds}", "Content-Type": "application/x-www-form-urlencoded"},
+                data="grant_type=client_credentials&scope=https://api.ebay.com/oauth/api_scope",
+                timeout=8,
+            )
+            if r.status_code == 200 and r.json().get("access_token"):
+                results["ebay"] = {"ok": True}
+            else:
+                results["ebay"] = {"ok": False, "reason": r.json().get("error_description", f"HTTP {r.status_code}")[:80]}
+        except Exception as e:
+            results["ebay"] = {"ok": False, "reason": str(e)[:80]}
+
+    return {"status": "success", "data": results}
+
+
 @app.get("/status")
 async def status():
     info = agent.get_model_info()
