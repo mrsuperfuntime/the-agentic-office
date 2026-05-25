@@ -2267,26 +2267,151 @@
   }
 
   async function toggleReport(id) {
-    const item = document.getElementById('rep_' + id);
-    const body = document.getElementById('repBody_' + id);
+    const item    = document.getElementById('rep_' + id);
     const content = document.getElementById('repContent_' + id);
     item.classList.toggle('open');
     if (item.classList.contains('open') && content.textContent === 'Loading...') {
       try {
-        const r = await fetch(`/reports/${id}`, { headers: apiHeaders() });
-        const d = await r.json();
+        const r   = await fetch(`/reports/${id}`, { headers: apiHeaders() });
+        const d   = await r.json();
         const rep = d.data;
         if (rep.status === 'error') {
           content.innerHTML = `<span style="color:var(--error)">Error: ${esc(rep.error || 'unknown')}</span>`;
         } else {
           const result = rep.result || {};
-          const text = result.report || result.answer || JSON.stringify(result, null, 2);
-          content.innerHTML = marked.parse(String(text));
+          if (rep.mode === 'products') {
+            renderArchiveProducts(content, result);
+          } else if (rep.mode === '3d') {
+            renderArchive3D(content, result);
+          } else {
+            const text = result.report || result.answer || JSON.stringify(result, null, 2);
+            content.innerHTML = marked.parse(String(text));
+          }
         }
       } catch (e) {
         content.textContent = 'Failed to load: ' + e.message;
       }
     }
+  }
+
+  function renderArchiveProducts(container, data) {
+    const products   = data.ranked_products || [];
+    const demand     = data.demand_data     || {};
+    const priceRange = data.price_range     || {};
+    const summary    = data.summary         || '';
+    const actionPlan = data.action_plan     || [];
+
+    const dl = (demand.demand_level || 'unknown').toLowerCase();
+    const tf = data.timeframe_days || 30;
+
+    const statItems = [
+      ['DEMAND',         dl.toUpperCase()],
+      ['ACTIVE MIN',     priceRange.min      ? '$' + priceRange.min      : null],
+      ['ACTIVE MAX',     priceRange.max      ? '$' + priceRange.max      : null],
+      ['ACTIVE AVG',     priceRange.avg      ? '$' + priceRange.avg      : null],
+      ['RESULTS',        data.total_results  ? String(data.total_results) : null],
+      demand.sold_count > 0 ? [`SOLD (${tf}d)`, String(demand.sold_count)]                              : null,
+      demand.sold_count > 0 ? ['AVG SOLD',       demand.avg_sold_price ? '$' + demand.avg_sold_price : null] : null,
+      demand.sold_count > 0 ? ['GMV',             demand.total_gmv      ? '$' + demand.total_gmv      : null] : null,
+    ].filter(x => x && x[1]);
+
+    const statsHtml = statItems.length ? `<div style="display:flex;flex-wrap:wrap;gap:12px;padding:8px 0 12px">
+      ${statItems.map(([l, v]) => `<div class="price-stat-item">
+        <span class="price-stat-label">${l}</span>
+        <span class="price-stat-val">${esc(v)}</span>
+      </div>`).join('')}
+    </div>` : '';
+
+    let metaHtml = '';
+    if (data.ebay_error) {
+      metaHtml += `<div style="color:var(--error);background:rgba(230,57,70,.08);border:1px solid rgba(230,57,70,.3);border-radius:6px;padding:8px 12px;font-size:.78em;margin-bottom:8px">⚠ eBay: ${esc(data.ebay_error)}</div>`;
+    }
+    if (data.thingiverse_error) {
+      metaHtml += `<div style="color:var(--warning);background:rgba(247,127,0,.08);border:1px solid rgba(247,127,0,.3);border-radius:6px;padding:8px 12px;font-size:.78em;margin-bottom:8px">⚠ Thingiverse: ${esc(data.thingiverse_error)}</div>`;
+    }
+    if (data.search_terms?.length) {
+      const chips = data.search_terms.map(t => `<span style="background:var(--surface3);border:1px solid var(--border2);border-radius:10px;padding:1px 8px;font-size:.75em;color:var(--accent2)">${esc(t)}</span>`).join(' ');
+      metaHtml += `<div style="font-size:.72em;color:var(--text-muted);margin-bottom:6px;display:flex;flex-wrap:wrap;gap:4px;align-items:center">eBay searched: ${chips}</div>`;
+    }
+    if (data.tv_terms?.length) {
+      const chips = data.tv_terms.map(t => `<span style="background:var(--surface3);border:1px solid rgba(6,214,160,.3);border-radius:10px;padding:1px 8px;font-size:.75em;color:var(--success)">${esc(t)}</span>`).join(' ');
+      metaHtml += `<div style="font-size:.72em;color:var(--text-muted);margin-bottom:10px;display:flex;flex-wrap:wrap;gap:4px;align-items:center">🖨 Thingiverse searched: ${chips}</div>`;
+    }
+
+    const summaryHtml = summary ? `<div class="report" style="margin-bottom:14px">${marked.parse(summary)}</div>` : '';
+
+    let apHtml = '';
+    if (actionPlan.length) {
+      apHtml = `<div class="action-plan" style="margin-bottom:14px">
+        <div class="action-plan-head">
+          <span class="action-plan-title">MAKE &amp; SELL</span>
+          <span class="action-plan-sub">top ${actionPlan.length} opportunities</span>
+        </div>
+        ${actionPlan.map(p => {
+          const score = p.score || 0;
+          const tier  = score >= 7 ? 'high' : score >= 4 ? 'medium' : 'low';
+          const imgHtml = p.image_url ? `<img class="action-img" src="${esc(p.image_url)}" alt="" loading="lazy" onerror="this.style.display='none'">` : '';
+          const links = [
+            p.ebay_url ? `<a class="action-link" href="${esc(p.ebay_url)}" target="_blank" rel="noopener">🔗 eBay listing</a>` : '',
+            p.tv_url   ? `<a class="action-link tv" href="${esc(p.tv_url)}" target="_blank" rel="noopener">🖨 ${esc((p.tv_name || 'Thingiverse').slice(0, 28))}</a>` : '',
+          ].filter(Boolean).join('');
+          return `<div class="action-item">
+            <div class="action-rank ${tier}">#${p.rank}</div>
+            ${imgHtml}
+            <div class="action-body">
+              <div class="action-make">${esc(p.make)} <span class="action-score-badge ${tier}">${score}/10 ${tier.toUpperCase()}</span></div>
+              ${p.why ? `<div class="action-why">${esc(p.why)}</div>` : ''}
+              ${links ? `<div class="action-links" style="margin-top:6px">${links}</div>` : ''}
+            </div>
+          </div>`;
+        }).join('')}
+      </div>`;
+    }
+
+    const cardsHtml = products.length
+      ? `<div class="product-grid">${products.map((p, i) => productCardHtml(p, i + 1)).join('')}</div>`
+      : '<div style="color:var(--text-muted);font-size:.85em;padding:10px 0">No products found.</div>';
+
+    container.innerHTML = statsHtml + metaHtml + summaryHtml + apHtml + cardsHtml;
+  }
+
+  function renderArchive3D(container, data) {
+    const things    = data.things          || [];
+    const tvTerms   = data.tv_terms        || [];
+    const priceRef  = data.ebay_price_ref  || {};
+    const tvError   = data.thingiverse_error || '';
+    const ebayError = data.ebay_error        || '';
+
+    const priceItems = [
+      ['EBAY REF MIN', priceRef.min ? '$' + priceRef.min : null],
+      ['EBAY REF MAX', priceRef.max ? '$' + priceRef.max : null],
+      ['EBAY REF AVG', priceRef.avg ? '$' + priceRef.avg : null],
+    ].filter(x => x[1]);
+
+    const statsHtml = priceItems.length ? `<div style="display:flex;flex-wrap:wrap;gap:12px;padding:8px 0 10px">
+      ${priceItems.map(([l, v]) => `<div class="price-stat-item">
+        <span class="price-stat-label">${l}</span>
+        <span class="price-stat-val">${esc(v)}</span>
+      </div>`).join('')}
+    </div>` : '';
+
+    let metaHtml = '';
+    if (tvError)   metaHtml += `<div style="color:var(--warning);background:rgba(247,127,0,.08);border:1px solid rgba(247,127,0,.3);border-radius:6px;padding:8px 12px;font-size:.78em;margin-bottom:8px">⚠ Thingiverse: ${esc(tvError)}</div>`;
+    if (ebayError) metaHtml += `<div style="font-size:.72em;color:var(--text-muted);margin-bottom:6px">eBay market reference unavailable — ${esc(ebayError)}</div>`;
+    if (tvTerms.length) {
+      const chips = tvTerms.map(t => `<span style="background:var(--surface3);border:1px solid rgba(6,214,160,.3);border-radius:10px;padding:1px 8px;font-size:.75em;color:var(--success)">${esc(t)}</span>`).join(' ');
+      metaHtml += `<div style="font-size:.72em;color:var(--text-muted);margin-bottom:10px;display:flex;flex-wrap:wrap;gap:4px;align-items:center">🖨 searched: ${chips}</div>`;
+    }
+
+    const maxPop = things.reduce((m, t) => Math.max(m, t.makes * 10 + t.downloads * 2 + t.likes * 5), 1);
+
+    const countBadge = `<span class="demand-badge ${things.length > 0 ? 'high' : 'unknown'}" style="margin-bottom:10px;display:inline-block">${things.length} MODELS</span>`;
+
+    const cardsHtml = things.length
+      ? `<div class="product-grid">${things.map((t, i) => modelCardHtml(t, i + 1, maxPop)).join('')}</div>`
+      : '<div style="color:var(--text-muted);font-size:.85em;padding:10px 0">No models found.</div>';
+
+    container.innerHTML = countBadge + statsHtml + metaHtml + cardsHtml;
   }
 
   async function deleteReport(id) {
