@@ -100,6 +100,12 @@ class ProductResearchRequest(BaseModel):
     timeframe_days: int = Field(default=30, ge=7, le=365, description="Days back to look for eBay sold data")
 
 
+class ThreeDModelSearchRequest(BaseModel):
+    query: str = Field(..., min_length=3, description="Topic or keyword to find 3D printable models for")
+    limit: int = Field(default=12, ge=1, le=20, description="Max models to return")
+    sort:  str = Field(default="popular", description="Thingiverse sort: popular, newest, makes, derivatives")
+
+
 class ScheduleCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=80)
     query: str = Field(..., min_length=3)
@@ -304,6 +310,19 @@ async def product_research(request: ProductResearchRequest):
     """
     logger.info("Product research: %s (limit=%d, timeframe=%dd)", request.query[:80], request.limit, request.timeframe_days)
     result = await agent.research_and_rank_async(request.query, limit=request.limit, timeframe_days=request.timeframe_days)
+    return {"status": "success", "data": result}
+
+
+@app.post("/research/3d-models")
+async def three_d_model_search(request: ThreeDModelSearchRequest):
+    """
+    Thingiverse-first 3D model search.
+    Generates 3D-print-specific search terms, searches Thingiverse across all of them,
+    ranks by popularity (makes > downloads > likes), and returns eBay price range as
+    market reference for what the physical version sells for.
+    """
+    logger.info("3D model search: %s (limit=%d, sort=%s)", request.query[:80], request.limit, request.sort)
+    result = await agent.thingiverse_model_search_async(request.query, limit=request.limit, sort=request.sort)
     return {"status": "success", "data": result}
 
 

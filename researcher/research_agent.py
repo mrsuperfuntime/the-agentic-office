@@ -280,6 +280,67 @@ class ResearchAgent:
     async def research_and_rank_async(self, query: str, limit: int = 12, timeframe_days: int = 30) -> dict:
         return await asyncio.to_thread(self.research_and_rank, query, limit, timeframe_days)
 
+    # ── 3D model search (Thingiverse-first) ──────────────────────────────────
+
+    def thingiverse_model_search(self, query: str, limit: int = 12, sort: str = "popular") -> dict:
+        """
+        3D-model-first pipeline:
+          1. LLM generates search terms that are ALL 3D-print specific
+          2. Search Thingiverse across every term, dedupe, rank by popularity
+          3. Fetch eBay price range as market reference (what does this category sell for?)
+        """
+        started_at   = datetime.now(timezone.utc).isoformat()
+        search_query = _extract_search_query(query)
+
+        tv_terms = self._expand_3d_model_queries(search_query, n=4)
+        logger.info("3D model search terms: %s", tv_terms)
+
+        per_term  = max(4, limit // max(len(tv_terms), 1) + 3)
+        things:   list[dict] = []
+        tv_seen:  set        = set()
+        tv_error: str | None = None
+
+        for term in tv_terms:
+            result = self.tools.thingiverse_search(term, limit=per_term, sort=sort)
+            if result.get("error"):
+                tv_error = result["error"]
+                logger.warning("Thingiverse error for %r: %s", term, tv_error)
+                break
+            for t in result.get("things", []):
+                tid = t.get("id")
+                if tid and tid not in tv_seen:
+                    tv_seen.add(tid)
+                    things.append(t)
+
+        # Composite popularity score: makes > downloads > likes (makes = someone actually printed it)
+        things.sort(
+            key=lambda t: t.get("makes", 0) * 10 + t.get("downloads", 0) * 2 + t.get("likes", 0) * 5,
+            reverse=True,
+        )
+        things = things[:limit]
+
+        # eBay market reference — what does this category sell for?
+        ebay_ref    = self.tools.ebay_search(search_query, limit=5)
+        price_range = ebay_ref.get("price_range", {})
+        ebay_error  = ebay_ref.get("error")
+
+        return {
+            "query":        query,
+            "search_query": search_query,
+            "tv_terms":     tv_terms,
+            "sort":         sort,
+            "things":       things,
+            "total":        len(things),
+            "ebay_price_ref": price_range,
+            "ebay_error":   ebay_error,
+            "thingiverse_error": tv_error,
+            "started_at":   started_at,
+            "completed_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+    async def thingiverse_model_search_async(self, query: str, limit: int = 12, sort: str = "popular") -> dict:
+        return await asyncio.to_thread(self.thingiverse_model_search, query, limit, sort)
+
     # ── Query expansion ───────────────────────────────────────────────────────
 
     def _expand_product_queries(self, query: str, n: int = 3) -> list[str]:
@@ -377,6 +438,60 @@ class ResearchAgent:
                 return clean[:n]
         logger.warning("Thingiverse query expansion failed for %r, using original", query)
         return [query]
+
+    def _expand_3d_model_queries(self, query: str, n: int = 4) -> list[str]:
+        """
+        Generate n Thingiverse search terms where EVERY term is anchored to 3D printing.
+        Unlike _expand_thingiverse_queries (which is category-aware), these are direct
+        Thingiverse search strings — each should surface real printable models.
+        E.g. 'shohei ohtani' → ['baseball card holder stl', 'baseball helmet 3d printable',
+                                  'baseball display stand print', 'baseball figurine model']
+        """
+        resp = self._call_ollama(
+            [
+                {
+                    "role": "system",
+                    "content": (
+                        "You generate Thingiverse search queries. Every term must be 3D printing specific. "
+                        "Return ONLY a valid JSON array of strings — no explanation, no markdown."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        f"Topic: '{query}'\n\n"
+                        f"Generate {n} Thingiverse search queries for 3D printable models related to this topic.\n"
+                        f"Rules:\n"
+                        f"  - Every term MUST include a 3D print context word: stl, 3d print, printable, model, print, replica, prop, figure, stand, holder, mount\n"
+                        f"  - Think about the CATEGORY and FAN COMMUNITY, not just the specific person/item\n"
+                        f"  - Each term should find different types of printable items (e.g. wearable, display, figurine, accessory)\n"
+                        f"  - Keep each query to 3-5 words\n\n"
+                        f"Examples:\n"
+                        f"  'shohei ohtani'  → [\"baseball card holder 3d print\", \"baseball helmet model\", \"baseball display stand stl\", \"baseball figurine printable\"]\n"
+                        f"  'mandalorian'    → [\"mandalorian helmet stl\", \"mandalorian armor 3d print\", \"star wars figure printable\", \"beskar prop model\"]\n"
+                        f"  'pokemon'        → [\"pokemon figure 3d print\", \"pokeball display stand stl\", \"pokedex prop printable\", \"pokemon card holder model\"]\n\n"
+                        f"Return JSON array only."
+                    ),
+                },
+            ],
+            use_tools=False,
+        )
+        content = (resp or {}).get("message", {}).get("content", "")
+        try:
+            terms = json.loads(content.strip())
+            if isinstance(terms, list):
+                clean = [str(t).strip() for t in terms if str(t).strip()]
+                if clean:
+                    return clean[:n]
+        except Exception:
+            pass
+        arr = _extract_json_array(content)
+        if arr:
+            clean = [str(t).strip() for t in arr if str(t).strip()]
+            if clean:
+                return clean[:n]
+        logger.warning("3D model query expansion failed for %r, using fallback", query)
+        return [f"{query} 3d print", f"{query} stl", f"{query} printable model"]
 
     # ── Cross-platform opportunity scoring ───────────────────────────────────
 
