@@ -453,14 +453,16 @@ class ResearchAgent:
         try:
             terms = json.loads(content.strip())
             if isinstance(terms, list):
-                clean = [str(t).strip() for t in terms if str(t).strip()]
+                clean = [_clean_tv_term(str(t)) for t in terms if str(t).strip()]
+                clean = [t for t in clean if len(t) >= 3]
                 if clean:
                     return clean[:n]
         except Exception:
             pass
         arr = _extract_json_array(content)
         if arr:
-            clean = [str(t).strip() for t in arr if str(t).strip()]
+            clean = [_clean_tv_term(str(t)) for t in arr if str(t).strip()]
+            clean = [t for t in clean if len(t) >= 3]
             if clean:
                 return clean[:n]
         logger.warning("Thingiverse query expansion failed for %r, using original", query)
@@ -509,14 +511,16 @@ class ResearchAgent:
         try:
             terms = json.loads(content.strip())
             if isinstance(terms, list):
-                clean = [str(t).strip() for t in terms if str(t).strip()]
+                clean = [_clean_tv_term(str(t)) for t in terms if str(t).strip()]
+                clean = [t for t in clean if len(t) >= 3]
                 if clean:
                     return clean[:n]
         except Exception:
             pass
         arr = _extract_json_array(content)
         if arr:
-            clean = [str(t).strip() for t in arr if str(t).strip()]
+            clean = [_clean_tv_term(str(t)) for t in arr if str(t).strip()]
+            clean = [t for t in clean if len(t) >= 3]
             if clean:
                 return clean[:n]
         logger.warning("3D model query expansion failed for %r, using fallback", query)
@@ -886,6 +890,18 @@ def _collect_sources(name: str, args: dict, result: Any, sources: list) -> None:
         sources.append({"type": "thingiverse", "query": args.get("query", ""), "url": "https://www.thingiverse.com"})
     elif name in ("ebay_search", "ebay_sold_data") and isinstance(result, dict) and not result.get("error"):
         sources.append({"type": "ebay", "query": args.get("query", "")})
+
+
+_TV_META = re.compile(
+    r'\b(?:3d\s*print(?:ed|ing|able)?|printable|\.?stl|replica|model)\b',
+    re.IGNORECASE,
+)
+
+def _clean_tv_term(term: str) -> str:
+    """Strip 3D-printing meta-words that never appear in Thingiverse model titles."""
+    cleaned = _TV_META.sub('', term)
+    cleaned = re.sub(r'\s{2,}', ' ', cleaned).strip(' ,.-')
+    return cleaned if len(cleaned) >= 3 else term
 
 
 def _extract_search_query(query: str) -> str:
