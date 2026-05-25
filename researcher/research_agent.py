@@ -219,12 +219,14 @@ class ResearchAgent:
                     "currency": cur,
                 }
 
-        # Step 3: Thingiverse — all 3 search terms, limit scales with eBay limit
-        tv_per_term = max(8, limit // len(search_terms) + 4)
+        # Step 3: Thingiverse — context-aware terms focused on 3D printable items
+        tv_terms = self._expand_thingiverse_queries(search_query, search_terms)
+        logger.info("Thingiverse search terms: %s", tv_terms)
+        tv_per_term = max(4, limit // max(len(tv_terms), 1) + 3)
         thingiverse_things: list[dict] = []
         thingiverse_error:  str | None = None
         tv_seen: set = set()
-        for tv_term in search_terms:
+        for tv_term in tv_terms:
             tv_result = self.tools.thingiverse_search(tv_term, limit=tv_per_term, sort="popular")
             if tv_result.get("error"):
                 thingiverse_error = tv_result["error"]
@@ -236,6 +238,7 @@ class ResearchAgent:
                     tv_seen.add(tid)
                     thingiverse_things.append(t)
         thingiverse_things.sort(key=lambda t: t.get("likes", 0) + t.get("downloads", 0) // 10, reverse=True)
+        thingiverse_things = thingiverse_things[:limit]  # honour the slider
 
         # Step 4: Real eBay sold data (Finding API on primary term)
         sold_data = self.tools.ebay_sold_data(search_query, timeframe_days=timeframe_days)
@@ -248,7 +251,7 @@ class ResearchAgent:
         summary = self._generate_product_summary(
             query, scored_items, sold_data, thingiverse_things, timeframe_days,
             ebay_error=ebay_error, search_query=search_query,
-            search_terms=search_terms,
+            search_terms=search_terms, tv_terms=tv_terms,
         )
 
         # Step 7: Action plan — top 3 concrete "what to make" recommendations
@@ -258,6 +261,7 @@ class ResearchAgent:
             "query":               query,
             "search_query":        search_query,
             "search_terms":        search_terms,
+            "tv_terms":            tv_terms,
             "timeframe_days":      timeframe_days,
             "summary":             summary,
             "action_plan":         action_plan,
@@ -320,6 +324,58 @@ class ResearchAgent:
                 return clean[:n]
         # Last resort: just use the original query
         logger.warning("Query expansion failed for %r, using original", query)
+        return [query]
+
+    def _expand_thingiverse_queries(self, query: str, ebay_terms: list[str], n: int = 3) -> list[str]:
+        """
+        Generate Thingiverse search terms focused on 3D PRINTABLE items in the same
+        category/theme as the query — NOT just repeating the eBay product terms.
+        E.g. 'shohei ohtani' → ['baseball card display stand', 'baseball helmet replica', 'baseball trophy']
+        """
+        resp = self._call_ollama(
+            [
+                {
+                    "role": "system",
+                    "content": (
+                        "You generate Thingiverse search keywords for 3D printable items. "
+                        "Return ONLY a valid JSON array of strings — no explanation, no markdown."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        f"Topic: '{query}'\n"
+                        f"eBay context (what people buy): {ebay_terms}\n\n"
+                        f"Generate {n} Thingiverse search terms for 3D PRINTABLE items a fan or collector "
+                        f"would want to make related to this topic.\n"
+                        f"Think about the SPORT, FRANCHISE, or THEME — not just the specific person or item.\n"
+                        f"Focus on: display stands, holders, organizers, helmets, busts, figurines, props, "
+                        f"trophies, wall mounts, and accessories.\n"
+                        f"Examples:\n"
+                        f"  'shohei ohtani' → [\"baseball card display stand\", \"baseball helmet replica\", \"baseball bat wall mount\"]\n"
+                        f"  'mandalorian'   → [\"mandalorian helmet\", \"star wars figurine\", \"beskar armor prop\"]\n"
+                        f"  'pokemon'       → [\"pokemon figure\", \"pokeball display case\", \"pokedex prop\"]\n"
+                        f"Return JSON array only."
+                    ),
+                },
+            ],
+            use_tools=False,
+        )
+        content = (resp or {}).get("message", {}).get("content", "")
+        try:
+            terms = json.loads(content.strip())
+            if isinstance(terms, list):
+                clean = [str(t).strip() for t in terms if str(t).strip()]
+                if clean:
+                    return clean[:n]
+        except Exception:
+            pass
+        arr = _extract_json_array(content)
+        if arr:
+            clean = [str(t).strip() for t in arr if str(t).strip()]
+            if clean:
+                return clean[:n]
+        logger.warning("Thingiverse query expansion failed for %r, using original", query)
         return [query]
 
     # ── Cross-platform opportunity scoring ───────────────────────────────────
@@ -444,6 +500,7 @@ class ResearchAgent:
         ebay_error: str | None = None,
         search_query: str | None = None,
         search_terms: list[str] | None = None,
+        tv_terms: list[str] | None = None,
     ) -> str:
         if not products:
             sq = search_query or query

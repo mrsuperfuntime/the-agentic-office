@@ -1406,7 +1406,11 @@
     }
     if (data.search_terms && data.search_terms.length) {
       const chips = data.search_terms.map(t => `<span style="background:var(--surface3);border:1px solid var(--border2);border-radius:10px;padding:1px 8px;font-size:.75em;color:var(--accent2)">${esc(t)}</span>`).join(' ');
-      errorHtml += `<div style="color:var(--text-muted);font-size:.72em;margin-bottom:12px;display:flex;align-items:center;gap:6px;flex-wrap:wrap">eBay searched: ${chips}</div>`;
+      errorHtml += `<div style="color:var(--text-muted);font-size:.72em;margin-bottom:6px;display:flex;align-items:center;gap:6px;flex-wrap:wrap">eBay searched: ${chips}</div>`;
+    }
+    if (data.tv_terms && data.tv_terms.length) {
+      const tvChips = data.tv_terms.map(t => `<span style="background:var(--surface3);border:1px solid rgba(6,214,160,.3);border-radius:10px;padding:1px 8px;font-size:.75em;color:var(--success)">${esc(t)}</span>`).join(' ');
+      errorHtml += `<div style="color:var(--text-muted);font-size:.72em;margin-bottom:12px;display:flex;align-items:center;gap:6px;flex-wrap:wrap">🖨 Thingiverse searched: ${tvChips}</div>`;
     }
     document.getElementById('productSummaryEl').innerHTML = errorHtml + summaryHtml;
 
