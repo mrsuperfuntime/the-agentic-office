@@ -822,6 +822,15 @@
           oninput="document.getElementById('limitVal').textContent=this.value">
         <span class="limit-val" id="limitVal">12</span>
       </div>
+      <div class="limit-wrap" id="timeframeWrap" style="display:none">
+        <span>SOLD DATA</span>
+        <select id="timeframeSelect" style="background:var(--surface2);border:1px solid var(--border2);border-radius:4px;color:var(--accent);font-family:var(--mono);font-size:.85em;padding:2px 6px;cursor:pointer;accent-color:var(--accent)">
+          <option value="7">7 days</option>
+          <option value="30" selected>30 days</option>
+          <option value="90">90 days</option>
+          <option value="180">180 days</option>
+        </select>
+      </div>
       <span class="hint">Ctrl+Enter to submit</span>
     </div>
 
@@ -985,6 +994,7 @@
     await checkApiConfig();
     checkHealth();
     checkStatus();
+    setMode('products');
     renderHistory();
     document.getElementById('query').addEventListener('keydown', e => {
       if (e.ctrlKey && e.key === 'Enter') { e.preventDefault(); submit(); }
@@ -1069,8 +1079,9 @@
     mode = m;
     document.getElementById('btnProducts').classList.toggle('active', m === 'products');
     document.getElementById('btnQuick').classList.toggle('active', m === 'quick');
-    document.getElementById('stepsWrap').style.display = 'none';
-    document.getElementById('limitWrap').style.display = m === 'products' ? '' : 'none';
+    document.getElementById('stepsWrap').style.display    = 'none';
+    document.getElementById('limitWrap').style.display     = m === 'products' ? '' : 'none';
+    document.getElementById('timeframeWrap').style.display = m === 'products' ? '' : 'none';
     const placeholders = {
       products: 'Search for products to rank by recreation potential...  (Ctrl+Enter)',
       quick:    'Ask a quick question...  (Ctrl+Enter to submit)',
@@ -1124,11 +1135,12 @@
         saveHistory(q);
         showResults(q, { report: j.answer, step_count: 0, steps: [], sources: [] });
       } else {
-        const limit = parseInt(document.getElementById('limitRange').value);
+        const limit         = parseInt(document.getElementById('limitRange').value);
+        const timeframe_days = parseInt(document.getElementById('timeframeSelect').value);
         const r = await fetch('/research/products', {
           method: 'POST',
           headers: apiHeaders(),
-          body: JSON.stringify({ query: q, limit }),
+          body: JSON.stringify({ query: q, limit, timeframe_days }),
         });
         if (r.status === 401) throw new Error('API key required — enter it in the banner above');
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
@@ -1293,20 +1305,29 @@
     badge.className = `demand-badge ${dl}`;
     badge.textContent = `DEMAND: ${dl.toUpperCase()}`;
 
-    // Price stats
+    // Price stats — active listings
     const statsEl = document.getElementById('priceStats');
+    const tf = data.timeframe_days || 30;
+    const cur = demand.currency || priceRange.currency || 'USD';
     const statItems = [
-      ['MIN',    priceRange.min    ? '$' + priceRange.min    : null],
-      ['MAX',    priceRange.max    ? '$' + priceRange.max    : null],
-      ['AVG',    priceRange.avg    ? '$' + priceRange.avg    : null],
-      ['MEDIAN', priceRange.median ? '$' + priceRange.median : null],
-      ['RESULTS', data.total_results ? String(data.total_results) : null],
-    ].filter(([, v]) => v);
+      ['ACTIVE MIN',   priceRange.min    ? '$' + priceRange.min    : null],
+      ['ACTIVE MAX',   priceRange.max    ? '$' + priceRange.max    : null],
+      ['ACTIVE AVG',   priceRange.avg    ? '$' + priceRange.avg    : null],
+      ['RESULTS',      data.total_results ? String(data.total_results) : null],
+      // sold data divider (label only)
+      demand.sold_count > 0 ? ['──────', null] : null,
+      demand.sold_count > 0 ? [`SOLD (${tf}d)`, String(demand.sold_count)] : null,
+      demand.sold_count > 0 ? ['AVG SOLD', demand.avg_sold_price ? '$' + demand.avg_sold_price : null] : null,
+      demand.sold_count > 0 ? ['SOLD RANGE', demand.min_sold_price ? `$${demand.min_sold_price}–$${demand.max_sold_price}` : null] : null,
+      demand.sold_count > 0 ? ['GMV', demand.total_gmv ? '$' + demand.total_gmv : null] : null,
+    ].filter(item => item && item[1]);
     statsEl.innerHTML = statItems.map(([l, v]) =>
-      `<div class="price-stat-item">
-        <span class="price-stat-label">${l}</span>
-        <span class="price-stat-val">${esc(v)}</span>
-      </div>`
+      l === '──────'
+        ? `<div style="width:1px;background:var(--border);align-self:stretch;margin:0 4px"></div>`
+        : `<div class="price-stat-item">
+            <span class="price-stat-label">${l}</span>
+            <span class="price-stat-val">${esc(v)}</span>
+           </div>`
     ).join('');
 
     // LLM narrative
@@ -1387,18 +1408,26 @@
   }
 
   function thingiverseItemHtml(t) {
-    const likes    = t.likes    || 0;
-    const collects = t.collects || 0;
-    const url      = esc(t.url || 'https://www.thingiverse.com');
-    const thumb    = t.thumbnail ? `<img src="${esc(t.thumbnail)}" style="width:40px;height:40px;object-fit:cover;border-radius:4px;flex-shrink:0" loading="lazy">` : '<div style="width:40px;height:40px;background:var(--surface3);border-radius:4px;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:1.2em">🖨</div>';
-    const tags     = (t.tags || []).slice(0, 4).map(tag => `<span style="font-size:.6em;padding:1px 5px;background:var(--surface3);border-radius:3px;color:var(--text-muted)">${esc(tag)}</span>`).join('');
+    const likes     = t.likes     || 0;
+    const collects  = t.collects  || 0;
+    const downloads = t.downloads || 0;
+    const makes     = t.makes     || 0;
+    const url       = esc(t.url || 'https://www.thingiverse.com');
+    const thumb     = t.thumbnail
+      ? `<img src="${esc(t.thumbnail)}" style="width:44px;height:44px;object-fit:cover;border-radius:4px;flex-shrink:0" loading="lazy">`
+      : '<div style="width:44px;height:44px;background:var(--surface3);border-radius:4px;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:1.3em">🖨</div>';
+    const tags = (t.tags || []).slice(0, 4).map(tag =>
+      `<span style="font-size:.6em;padding:1px 5px;background:var(--surface3);border-radius:3px;color:var(--text-muted)">${esc(tag)}</span>`
+    ).join('');
     return `<div class="src-item" style="align-items:center">
       ${thumb}
       <div style="flex:1;min-width:0">
         <a class="src-link" href="${url}" target="_blank" rel="noopener" style="font-size:.82em;font-weight:700">${esc(t.name || 'Untitled')}</a>
-        <div style="font-size:.7em;color:var(--text-muted);margin-top:2px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
-          <span>♥ ${likes.toLocaleString()}</span>
-          <span>⊕ ${collects.toLocaleString()}</span>
+        <div style="font-size:.7em;color:var(--text-muted);margin-top:3px;display:flex;gap:12px;align-items:center;flex-wrap:wrap">
+          <span title="Likes">♥ ${likes.toLocaleString()}</span>
+          ${downloads > 0 ? `<span title="Downloads" style="color:var(--accent2)">⬇ ${downloads.toLocaleString()}</span>` : ''}
+          ${makes     > 0 ? `<span title="Makes" style="color:var(--success)">🖨 ${makes.toLocaleString()}</span>` : ''}
+          <span title="Collects">⊕ ${collects.toLocaleString()}</span>
           ${t.creator ? `<span>by ${esc(t.creator)}</span>` : ''}
           ${tags}
         </div>

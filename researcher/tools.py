@@ -35,6 +35,11 @@ TOOL_SCHEMAS = [
                         "description": "Number of results to return (1-20)",
                         "default": 8,
                     },
+                    "sort": {
+                        "type": "string",
+                        "description": "Sort order: 'popular' (default), 'newest', 'makes', 'derivatives'",
+                        "default": "popular",
+                    },
                 },
                 "required": ["query"],
             },
@@ -126,16 +131,21 @@ TOOL_SCHEMAS = [
     {
         "type": "function",
         "function": {
-            "name": "ebay_sold_research",
+            "name": "ebay_sold_data",
             "description": (
-                "Research eBay sold/completed listings and market demand for a product. "
-                "Returns sales velocity signals, price trends, and demand indicators. "
-                "Use this after ebay_search to understand how well products actually sell."
+                "Fetch real eBay completed/sold listing data via the eBay Finding API. "
+                "Returns actual sold count, average sold price, min/max prices, and total GMV "
+                "for a given timeframe. Use this after ebay_search to understand true sales velocity."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "query": {"type": "string", "description": "Product to research sold data for"},
+                    "query": {"type": "string", "description": "Product to look up sold data for"},
+                    "timeframe_days": {
+                        "type": "integer",
+                        "description": "How many days back to search for sold listings (7, 30, 90, 180)",
+                        "default": 30,
+                    },
                 },
                 "required": ["query"],
             },
@@ -231,17 +241,19 @@ class ResearchTools:
 
     # ── Thingiverse ──────────────────────────────────────────────────────
 
-    def thingiverse_search(self, query: str, limit: int = 8) -> dict:
+    def thingiverse_search(self, query: str, limit: int = 8, sort: str = "popular") -> dict:
         if not self.thingiverse_token:
             return {
                 "error": "Thingiverse token not configured",
                 "hint":  "Set THINGIVERSE_TOKEN in .env — get it at https://www.thingiverse.com/developers",
             }
+        valid_sorts = {"popular", "newest", "makes", "derivatives"}
+        sort = sort if sort in valid_sorts else "popular"
         try:
             resp = self._session.get(
                 f"https://api.thingiverse.com/search/{url_quote(query)}",
                 headers={"Authorization": f"Bearer {self.thingiverse_token}"},
-                params={"per_page": min(max(1, limit), 20), "page": 1, "type": "things", "sort": "popular"},
+                params={"per_page": min(max(1, limit), 20), "page": 1, "type": "things", "sort": sort},
                 timeout=15,
             )
             if resp.status_code == 401:
@@ -259,16 +271,18 @@ class ResearchTools:
                 creator = t.get("creator") or {}
                 tags    = [tg.get("name", "") for tg in (t.get("tags") or [])[:8] if tg.get("name")]
                 parsed.append({
-                    "id":           t.get("id"),
-                    "name":         t.get("name", ""),
-                    "thumbnail":    t.get("thumbnail", ""),
-                    "url":          t.get("public_url") or f"https://www.thingiverse.com/thing:{t.get('id')}",
-                    "creator":      creator.get("name", ""),
-                    "likes":        int(t.get("like_count", 0) or 0),
-                    "collects":     int(t.get("collect_count", 0) or 0),
-                    "comments":     int(t.get("comment_count", 0) or 0),
-                    "tags":         tags,
-                    "is_printable": bool(t.get("is_printable", True)),
+                    "id":            t.get("id"),
+                    "name":          t.get("name", ""),
+                    "thumbnail":     t.get("thumbnail", ""),
+                    "url":           t.get("public_url") or f"https://www.thingiverse.com/thing:{t.get('id')}",
+                    "creator":       creator.get("name", ""),
+                    "likes":         int(t.get("like_count", 0) or 0),
+                    "collects":      int(t.get("collect_count", 0) or 0),
+                    "downloads":     int(t.get("download_count", 0) or 0),
+                    "makes":         int(t.get("makes_count", 0) or 0),
+                    "comments":      int(t.get("comment_count", 0) or 0),
+                    "tags":          tags,
+                    "is_printable":  bool(t.get("is_printable", True)),
                 })
 
             return {
@@ -400,58 +414,132 @@ class ResearchTools:
             logger.error("ebay_search error: %s", e)
             return {"error": str(e)}
 
-    # ── eBay sold / demand research ───────────────────────────────────────────
+    # ── eBay sold data (Finding API) ──────────────────────────────────────────
 
-    def ebay_sold_research(self, query: str) -> dict:
+    def ebay_sold_data(self, query: str, timeframe_days: int = 30) -> dict:
         """
-        Estimate sales velocity and demand by scraping web results for
-        eBay sold/completed listings. No extra API credentials needed.
+        Real eBay completed/sold listing data via the eBay Finding API.
+        Uses App ID directly — no OAuth needed.
+        Returns sold count, avg/min/max price, total GMV for the given timeframe.
         """
-        sold_results  = self.web_search(f'ebay sold completed "{query}" price', num_results=6)
-        trend_results = self.web_search(f'"{query}" how many sold ebay demand popularity 2025', num_results=4)
-
-        # Heuristic demand signal from result count & snippets
-        demand_words = {"sold", "popular", "trending", "high demand", "selling fast", "best seller", "hot item"}
-        supply_words = {"overstocked", "slow", "low demand", "clearance", "unsold"}
-
-        demand_hits  = 0
-        supply_hits  = 0
-        price_mentions: list[float] = []
-
-        import re
-        for r in sold_results + trend_results:
-            snippet = (r.get("snippet") or "").lower()
-            demand_hits += sum(1 for w in demand_words if w in snippet)
-            supply_hits += sum(1 for w in supply_words if w in snippet)
-            for m in re.findall(r'\$\s*(\d+(?:\.\d{1,2})?)', snippet):
-                try:
-                    price_mentions.append(float(m))
-                except ValueError:
-                    pass
-
-        if demand_hits > supply_hits + 1:
-            demand_level = "high"
-        elif supply_hits > demand_hits:
-            demand_level = "low"
-        else:
-            demand_level = "medium"
-
-        sold_price_range: dict = {}
-        if price_mentions:
-            sold_price_range = {
-                "min": f"{min(price_mentions):.2f}",
-                "max": f"{max(price_mentions):.2f}",
-                "avg": f"{sum(price_mentions)/len(price_mentions):.2f}",
+        if not self.ebay_app_id:
+            return {
+                "error": "eBay App ID not configured",
+                "hint":  "Set EBAY_APP_ID in .env",
             }
 
-        return {
-            "query":           query,
-            "demand_level":    demand_level,
-            "demand_signals":  demand_hits,
-            "supply_signals":  supply_hits,
-            "sold_price_range": sold_price_range,
-            "sources":         sold_results[:4],
-        }
+        from datetime import datetime, timedelta, timezone as _tz
+        timeframe_days = max(1, min(int(timeframe_days), 365))
+        end_time_from  = (
+            datetime.now(_tz.utc) - timedelta(days=timeframe_days)
+        ).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+        try:
+            resp = self._session.get(
+                "https://svcs.ebay.com/services/search/FindingService/v1",
+                params={
+                    "OPERATION-NAME":               "findCompletedItems",
+                    "SERVICE-VERSION":              "1.0.0",
+                    "SECURITY-APPNAME":             self.ebay_app_id,
+                    "RESPONSE-DATA-FORMAT":         "JSON",
+                    "REST-PAYLOAD":                 "",
+                    "keywords":                     query,
+                    "itemFilter(0).name":           "SoldItemsOnly",
+                    "itemFilter(0).value":          "true",
+                    "itemFilter(1).name":           "EndTimeFrom",
+                    "itemFilter(1).value":          end_time_from,
+                    "paginationInput.entriesPerPage": 100,
+                    "sortOrder":                    "EndTimeSoonest",
+                },
+                timeout=20,
+            )
+
+            if resp.status_code != 200:
+                return {"error": f"eBay Finding API returned {resp.status_code}", "detail": resp.text[:300]}
+
+            data    = resp.json()
+            wrapper = (data.get("findCompletedItemsResponse") or [{}])[0]
+            ack     = (wrapper.get("ack") or [""])[0]
+
+            if ack not in ("Success", "Warning"):
+                err = (wrapper.get("errorMessage") or [{}])[0]
+                return {"error": f"eBay Finding API: {ack}", "detail": str(err)[:200]}
+
+            pagination    = (wrapper.get("paginationOutput") or [{}])[0]
+            total_entries = int((pagination.get("totalEntries") or ["0"])[0])
+
+            search_result = (wrapper.get("searchResult") or [{}])[0]
+            items         = search_result.get("item") or []
+
+            prices:      list[float] = []
+            recent_sold: list[dict]  = []
+            currency = "USD"
+
+            for item in items:
+                selling   = (item.get("sellingStatus") or [{}])[0]
+                state     = (selling.get("sellingState") or [""])[0]
+                if state != "EndedWithSales":
+                    continue
+
+                price_obj = (selling.get("currentPrice") or [{}])[0]
+                price_val = _safe_float(price_obj.get("__value__", 0))
+                currency  = price_obj.get("@currencyId", "USD")
+
+                if price_val <= 0:
+                    continue
+
+                prices.append(price_val)
+                listing  = (item.get("listingInfo") or [{}])[0]
+                end_time = (listing.get("endTime") or [""])[0]
+                title    = (item.get("title") or [""])[0]
+                url      = (item.get("viewItemURL") or [""])[0]
+
+                recent_sold.append({
+                    "title":   title[:100],
+                    "price":   f"{currency} {price_val:.2f}",
+                    "sold_at": end_time[:10] if end_time else "",
+                    "url":     url,
+                })
+
+            result: dict = {
+                "query":          query,
+                "timeframe_days": timeframe_days,
+                "start_date":     end_time_from[:10],
+                "total_in_timeframe": total_entries,
+            }
+
+            if prices:
+                sold_count = len(prices)
+                total_gmv  = sum(prices)
+                avg_price  = total_gmv / sold_count
+                demand_level = (
+                    "high"   if sold_count >= 50 else
+                    "medium" if sold_count >= 10 else
+                    "low"
+                )
+                result.update({
+                    "sold_count":     sold_count,
+                    "avg_sold_price": f"{avg_price:.2f}",
+                    "min_sold_price": f"{min(prices):.2f}",
+                    "max_sold_price": f"{max(prices):.2f}",
+                    "total_gmv":      f"{total_gmv:.2f}",
+                    "currency":       currency,
+                    "demand_level":   demand_level,
+                    "recent_sold":    recent_sold[:10],
+                })
+            else:
+                result.update({
+                    "sold_count":    0,
+                    "demand_level":  "low",
+                    "recent_sold":   [],
+                    "note": "No sold items found in this timeframe — try a broader query or longer timeframe",
+                })
+
+            return result
+
+        except Exception as e:
+            logger.error("ebay_sold_data error: %s", e)
+            return {"error": str(e)}
 
     # ── eBay token ────────────────────────────────────────────────────────────
 
@@ -489,15 +577,22 @@ class ResearchTools:
         if name == "wikipedia_search":
             return self.wikipedia_search(args.get("topic", ""))
         if name == "thingiverse_search":
-            return self.thingiverse_search(args.get("query", ""), int(args.get("limit", 8)))
+            return self.thingiverse_search(
+                args.get("query", ""),
+                int(args.get("limit", 8)),
+                args.get("sort", "popular"),
+            )
         if name == "ebay_search":
             return self.ebay_search(
                 args.get("query", ""),
                 int(args.get("limit", 12)),
                 args.get("condition", "all"),
             )
-        if name == "ebay_sold_research":
-            return self.ebay_sold_research(args.get("query", ""))
+        if name == "ebay_sold_data":
+            return self.ebay_sold_data(
+                args.get("query", ""),
+                int(args.get("timeframe_days", 30)),
+            )
         return {"error": f"Unknown tool: {name}"}
 
 

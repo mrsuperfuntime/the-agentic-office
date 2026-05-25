@@ -95,6 +95,7 @@ class QuickRequest(BaseModel):
 class ProductResearchRequest(BaseModel):
     query: str = Field(..., min_length=3, description="Product or category to research")
     limit: int = Field(default=12, ge=1, le=20, description="Max eBay listings to fetch and score")
+    timeframe_days: int = Field(default=30, ge=7, le=365, description="Days back to look for eBay sold data")
 
 
 class ScheduleCreate(BaseModel):
@@ -245,8 +246,8 @@ async def product_research(request: ProductResearchRequest):
     then scores every product 1-10 for recreation potential with Meshy AI.
     Returns products sorted by recreation score, highest first.
     """
-    logger.info("Product research: %s (limit=%d)", request.query[:80], request.limit)
-    result = await agent.research_and_rank_async(request.query, limit=request.limit)
+    logger.info("Product research: %s (limit=%d, timeframe=%dd)", request.query[:80], request.limit, request.timeframe_days)
+    result = await agent.research_and_rank_async(request.query, limit=request.limit, timeframe_days=request.timeframe_days)
     return {"status": "success", "data": result}
 
 
@@ -277,8 +278,9 @@ async def handle_request(request: dict):
         query = (request.get("query") or instruction).strip()
         if not query:
             return {"status": "error", "message": "query is required"}
-        limit = int(request.get("limit", 12))
-        result = await agent.research_and_rank_async(query, limit=limit)
+        limit          = int(request.get("limit", 12))
+        timeframe_days = int(request.get("timeframe_days", 30))
+        result = await agent.research_and_rank_async(query, limit=limit, timeframe_days=timeframe_days)
         return {"status": "success", "data": result}
 
     if action == "status":

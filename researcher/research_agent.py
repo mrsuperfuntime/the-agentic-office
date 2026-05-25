@@ -31,18 +31,18 @@ Available tools
 • web_search          — search the web for current information
 • fetch_page          — read the full text of a specific URL
 • wikipedia_search    — look up background knowledge and definitions
-• thingiverse_search  — find existing 3D printable models on Thingiverse (like counts = demand signal)
+• thingiverse_search  — find existing 3D printable models on Thingiverse (like/download counts = demand signal)
 • ebay_search         — search eBay for product listings with images and pricing
-• ebay_sold_research  — research actual sales velocity and demand signals
+• ebay_sold_data      — real eBay completed/sold data: sold count, avg price, GMV for a timeframe
 
 Research process
 ────────────────
 1. Break the request into specific searches
-2. Use ebay_search to find products — it returns images, categories, and pricing
-3. Use ebay_sold_research to understand demand and sales history
-4. Use thingiverse_search to find existing 3D models — high like counts confirm recreation feasibility
+2. Use ebay_search to find active products — it returns images, categories, and pricing
+3. Use ebay_sold_data to get real sold counts, average sold prices, and GMV
+4. Use thingiverse_search to find existing 3D models — likes and download counts confirm demand
 5. Use web_search for broader market context
-6. Synthesize everything into a structured, cited report
+6. Synthesize everything into a structured, cited report with real numbers
 
 Always cite sources. Be thorough, factual, and concise.
 """
@@ -158,44 +158,44 @@ class ResearchAgent:
 
     # ── Product research + recreation ranking ─────────────────────────────────
 
-    def research_and_rank(self, query: str, limit: int = 12) -> dict:
+    def research_and_rank(self, query: str, limit: int = 12, timeframe_days: int = 30) -> dict:
         """
         Full product research pipeline:
-          1. eBay search for rich product data (images, prices, categories)
-          2. Thingiverse search for existing 3D models (feasibility + demand signal)
-          3. Sold-demand research for market signals
+          1. eBay active listings (images, prices, categories)
+          2. Thingiverse models (likes, downloads, makes — demand signal)
+          3. Real eBay sold data via Finding API (sold count, avg price, GMV)
           4. LLM batch recreation scoring with Meshy AI prompts
-          5. Ranked product cards
+          5. Ranked product cards + summary
         """
         started_at = datetime.now(timezone.utc).isoformat()
 
-        # Step 1: eBay listings
+        # Step 1: eBay active listings
         ebay_result = self.tools.ebay_search(query, limit=limit)
         items       = ebay_result.get("items", [])
         ebay_error  = ebay_result.get("error")
 
-        # Step 2: Thingiverse models for this query
-        thingiverse_result = self.tools.thingiverse_search(query, limit=8)
+        # Step 2: Thingiverse models
+        thingiverse_result = self.tools.thingiverse_search(query, limit=8, sort="popular")
         thingiverse_things = thingiverse_result.get("things", [])
         thingiverse_error  = thingiverse_result.get("error")
         if thingiverse_error:
             logger.info("Thingiverse: %s", thingiverse_error)
 
-        # Step 3: Sold / demand signals
-        sold_data = {}
-        if items:
-            sold_data = self.tools.ebay_sold_research(query)
+        # Step 3: Real eBay sold data (Finding API)
+        sold_data: dict = {}
+        if items or not ebay_error:
+            sold_data = self.tools.ebay_sold_data(query, timeframe_days=timeframe_days)
 
         # Step 4: Web context
         web_context = self.tools.web_search(
-            f"{query} popular 3D print figurine market 2025",
+            f"{query} popular 3D print figurine market demand 2025",
             num_results=4,
         )
 
-        # Step 5: Score each product for recreation potential (with Thingiverse context)
+        # Step 5: Score each product for recreation potential
         scored_items: list[dict] = []
         if items:
-            scores = self._score_products_for_recreation(items, thingiverse_things)
+            scores = self._score_products_for_recreation(items, thingiverse_things, sold_data)
             for i, item in enumerate(items):
                 score_data = scores.get(i + 1, {})
                 scored_items.append({
@@ -209,11 +209,14 @@ class ResearchAgent:
 
         scored_items.sort(key=lambda x: x.get("recreation_score", 0), reverse=True)
 
-        # Step 6: LLM summary
-        summary = self._generate_product_summary(query, scored_items, sold_data, thingiverse_things)
+        # Step 6: LLM summary with real metrics
+        summary = self._generate_product_summary(
+            query, scored_items, sold_data, thingiverse_things, timeframe_days
+        )
 
         return {
             "query":             query,
+            "timeframe_days":    timeframe_days,
             "summary":           summary,
             "ranked_products":   scored_items,
             "total_results":     ebay_result.get("total_results", len(items)),
@@ -227,13 +230,16 @@ class ResearchAgent:
             "completed_at":      datetime.now(timezone.utc).isoformat(),
         }
 
-    async def research_and_rank_async(self, query: str, limit: int = 12) -> dict:
-        return await asyncio.to_thread(self.research_and_rank, query, limit)
+    async def research_and_rank_async(self, query: str, limit: int = 12, timeframe_days: int = 30) -> dict:
+        return await asyncio.to_thread(self.research_and_rank, query, limit, timeframe_days)
 
     # ── Recreation scoring ────────────────────────────────────────────────────
 
     def _score_products_for_recreation(
-        self, items: list[dict], thingiverse_things: list[dict] | None = None
+        self,
+        items: list[dict],
+        thingiverse_things: list[dict] | None = None,
+        sold_data: dict | None = None,
     ) -> dict[int, dict]:
         """
         Batch-score all items in a single LLM call.
@@ -254,22 +260,35 @@ class ResearchAgent:
         if thingiverse_things:
             tv_summary = [
                 {
-                    "name":     t.get("name", "")[:80],
-                    "likes":    t.get("likes", 0),
-                    "collects": t.get("collects", 0),
-                    "tags":     t.get("tags", [])[:5],
+                    "name":      t.get("name", "")[:80],
+                    "likes":     t.get("likes", 0),
+                    "downloads": t.get("downloads", 0),
+                    "makes":     t.get("makes", 0),
+                    "collects":  t.get("collects", 0),
+                    "tags":      t.get("tags", [])[:5],
                 }
                 for t in thingiverse_things[:6]
             ]
             thingiverse_context = (
-                f"\n\nThingiverse models already available for this product category:\n"
+                f"\n\nThingiverse models for this category:\n"
                 f"{json.dumps(tv_summary, indent=2)}\n"
-                f"Use like/collect counts as evidence of 3D print demand and feasibility."
+                f"Use likes, downloads, and makes as evidence of 3D print demand and feasibility."
+            )
+
+        sold_context = ""
+        if sold_data and sold_data.get("sold_count", 0) > 0:
+            sold_context = (
+                f"\n\neBay sold data ({sold_data.get('timeframe_days', 30)} days): "
+                f"{sold_data['sold_count']} units sold — "
+                f"avg ${sold_data.get('avg_sold_price', '?')} — "
+                f"GMV ${sold_data.get('total_gmv', '?')}. "
+                f"Factor this demand signal into your market opportunity score."
             )
 
         prompt = (
             f"Products to score:\n{json.dumps(product_list, indent=2)}"
-            f"{thingiverse_context}\n\n"
+            f"{thingiverse_context}"
+            f"{sold_context}\n\n"
             "Return the JSON array of scores as specified."
         )
 
@@ -302,6 +321,7 @@ class ResearchAgent:
         products: list[dict],
         sold_data: dict,
         thingiverse_things: list[dict] | None = None,
+        timeframe_days: int = 30,
     ) -> str:
         if not products:
             return f"No eBay listings found for '{query}'. Try a different search term or check eBay API credentials."
@@ -313,22 +333,37 @@ class ResearchAgent:
         )
         demand = sold_data.get("demand_level", "unknown")
 
+        sold_note = ""
+        sold_count = sold_data.get("sold_count", 0)
+        if sold_count > 0:
+            sold_note = (
+                f"\neBay sold data (last {timeframe_days} days): "
+                f"{sold_count} units sold — "
+                f"avg ${sold_data.get('avg_sold_price', '?')} — "
+                f"GMV ${sold_data.get('total_gmv', '?')} {sold_data.get('currency', 'USD')}"
+            )
+        elif sold_data.get("total_in_timeframe", 0) == 0:
+            sold_note = f"\neBay sold data: no completed sales found in the last {timeframe_days} days"
+
         tv_note = ""
         if thingiverse_things:
             top_tv = thingiverse_things[:3]
-            tv_note = "\nTop Thingiverse models found:\n" + "\n".join(
-                f"  • {t.get('name','')[:60]} — {t.get('likes', 0)} likes"
+            tv_note = "\nTop Thingiverse models:\n" + "\n".join(
+                f"  • {t.get('name','')[:60]} — {t.get('likes', 0)} likes, "
+                f"{t.get('downloads', 0):,} downloads, {t.get('makes', 0)} makes"
                 for t in top_tv
             )
 
         prompt = (
-            f"You are THE RESEARCHER. Write a concise 3-paragraph analysis for:\n"
+            f"You are THE RESEARCHER. Write a concise 3-paragraph market analysis for:\n"
             f"Query: {query}\n"
-            f"Demand level: {demand}\n"
+            f"Market demand: {demand}"
+            f"{sold_note}\n"
             f"Top recreation candidates:\n{top_titles}"
             f"{tv_note}\n\n"
-            f"Cover: market overview, Thingiverse evidence for recreation feasibility, "
-            f"and recommended approach using Meshy AI. Be direct and actionable."
+            f"Cover: (1) market overview with real sales numbers, "
+            f"(2) Thingiverse evidence and download/like counts for feasibility, "
+            f"(3) recommended Meshy AI approach. Be direct, use the actual numbers provided."
         )
         resp = self._call_ollama(
             [{"role": "user", "content": prompt}],
@@ -486,8 +521,11 @@ def _summarize(tool_name: str, result: Any) -> str:
                 f"{result.get('showing', 0)}/{result.get('total_results', 0)} listings — "
                 f"avg {pr.get('currency','USD')} {pr.get('avg','?')}"
             )
-        if tool_name == "ebay_sold_research":
-            return f"demand: {result.get('demand_level','?')}"
+        if tool_name == "ebay_sold_data":
+            sc = result.get("sold_count", 0)
+            gmv = result.get("total_gmv", "?")
+            tf  = result.get("timeframe_days", 30)
+            return f"{sc} sold in {tf}d — GMV ${gmv} — demand: {result.get('demand_level','?')}"
         if tool_name == "wikipedia_search":
             return f"article: {result.get('title','')} ({len(result.get('summary',''))} chars)"
         if tool_name == "fetch_page":
@@ -506,7 +544,7 @@ def _collect_sources(name: str, args: dict, result: Any, sources: list) -> None:
         sources.append({"type": "wikipedia", "url": result.get("url", ""), "title": result.get("title", "")})
     elif name == "thingiverse_search" and isinstance(result, dict) and not result.get("error"):
         sources.append({"type": "thingiverse", "query": args.get("query", ""), "url": "https://www.thingiverse.com"})
-    elif name in ("ebay_search", "ebay_sold_research") and isinstance(result, dict) and not result.get("error"):
+    elif name in ("ebay_search", "ebay_sold_data") and isinstance(result, dict) and not result.get("error"):
         sources.append({"type": "ebay", "query": args.get("query", "")})
 
 
