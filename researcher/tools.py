@@ -10,8 +10,16 @@ from typing import Any
 from urllib.parse import quote as url_quote
 
 import requests
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+# Re-load .env by explicit path in case this module is imported before main.py
+try:
+    from dotenv import load_dotenv as _load_dotenv
+    _load_dotenv(dotenv_path=Path(__file__).parent / ".env")
+except Exception:
+    pass
 
 # ── Ollama tool schemas ────────────────────────────────────────────────────────
 

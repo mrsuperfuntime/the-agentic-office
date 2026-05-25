@@ -18,7 +18,9 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.middleware.base import BaseHTTPMiddleware
 
-load_dotenv()
+# Load .env from the same directory as this file, regardless of working directory
+_ENV_FILE = Path(__file__).parent / ".env"
+load_dotenv(dotenv_path=_ENV_FILE)
 
 from research_agent import ResearchAgent  # noqa: E402 — load_dotenv must run first
 import database as db
@@ -148,6 +150,29 @@ async def health():
         "office": "researcher",
         "model": info,
         "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+@app.get("/debug")
+async def debug_env():
+    """Diagnostic — shows what credentials are loaded (masked). No auth required."""
+    def mask(val: str) -> str:
+        if not val:
+            return "NOT SET"
+        return val[:4] + "..." + val[-4:] if len(val) > 8 else "SET (short)"
+
+    ebay_app  = os.getenv("EBAY_APP_ID",  "").strip()
+    ebay_cert = os.getenv("EBAY_CERT_ID", "").strip()
+    tv_token  = os.getenv("THINGIVERSE_TOKEN", "").strip()
+    return {
+        "env_file":            str(_ENV_FILE),
+        "env_file_exists":     _ENV_FILE.exists(),
+        "EBAY_APP_ID":         mask(ebay_app),
+        "EBAY_CERT_ID":        mask(ebay_cert),
+        "EBAY_ENV":            os.getenv("EBAY_ENV", "production"),
+        "THINGIVERSE_TOKEN":   mask(tv_token),
+        "OLLAMA_URL":          os.getenv("OLLAMA_URL", "http://localhost:11434"),
+        "RESEARCHER_MODEL":    os.getenv("RESEARCHER_MODEL", os.getenv("OLLAMA_MODEL", "qwen2.5:7b")),
     }
 
 
