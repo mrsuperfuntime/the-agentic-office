@@ -1243,11 +1243,14 @@
     </div>`;
   }
 
-  function collapsible(title, count, body, openByDefault) {
+  function collapsible(title, countOrMeta, body, openByDefault) {
     const id = 'c' + Math.random().toString(36).slice(2);
+    const meta = typeof countOrMeta === 'string'
+      ? `<span style="font-size:.78em;color:var(--text-muted);font-family:var(--mono);letter-spacing:0;font-weight:400">${esc(countOrMeta)}</span>`
+      : `<span class="coll-count">${countOrMeta}</span>`;
     return `<div class="coll ${openByDefault ? 'open' : ''}" id="${id}">
       <div class="coll-head" onclick="document.getElementById('${id}').classList.toggle('open')">
-        <span class="coll-name">${title}<span class="coll-count">${count}</span></span>
+        <span class="coll-name">${title} ${meta}</span>
         <span class="chevron">▼</span>
       </div>
       <div class="coll-body">${body}</div>
@@ -1332,27 +1335,44 @@
 
     // LLM narrative
     let summaryHtml = summary ? marked.parse(summary) : '';
+    // Error banners
+    let errorHtml = '';
     if (data.ebay_error) {
-      summaryHtml = `<div style="color:var(--error);font-size:.82em;margin-bottom:12px">⚠ eBay API error: ${esc(data.ebay_error)}</div>` + summaryHtml;
+      errorHtml += `<div style="color:var(--error);background:rgba(230,57,70,.08);border:1px solid rgba(230,57,70,.3);border-radius:6px;padding:10px 14px;font-size:.78em;margin-bottom:10px">⚠ eBay: ${esc(data.ebay_error)}</div>`;
+    }
+    if (data.thingiverse_error) {
+      errorHtml += `<div style="color:var(--warning);background:rgba(247,127,0,.08);border:1px solid rgba(247,127,0,.3);border-radius:6px;padding:10px 14px;font-size:.78em;margin-bottom:10px">⚠ Thingiverse: ${esc(data.thingiverse_error)} — regenerate token at <a href="https://www.thingiverse.com/developers" target="_blank" style="color:var(--warning)">thingiverse.com/developers</a>, then update THINGIVERSE_TOKEN in ~/.env and restart.</div>`;
     }
     if (data.search_terms && data.search_terms.length) {
       const chips = data.search_terms.map(t => `<span style="background:var(--surface3);border:1px solid var(--border2);border-radius:10px;padding:1px 8px;font-size:.75em;color:var(--accent2)">${esc(t)}</span>`).join(' ');
-      summaryHtml = `<div style="color:var(--text-muted);font-size:.72em;margin-bottom:12px;display:flex;align-items:center;gap:6px;flex-wrap:wrap">Searched eBay for: ${chips}</div>` + summaryHtml;
-    } else if (data.search_query && data.search_query !== data.query) {
-      summaryHtml = `<div style="color:var(--text-muted);font-size:.72em;margin-bottom:10px">Searched eBay for: <span style="color:var(--accent)">${esc(data.search_query)}</span></div>` + summaryHtml;
+      errorHtml += `<div style="color:var(--text-muted);font-size:.72em;margin-bottom:12px;display:flex;align-items:center;gap:6px;flex-wrap:wrap">eBay searched: ${chips}</div>`;
     }
-    document.getElementById('productSummaryEl').innerHTML = summaryHtml;
+    document.getElementById('productSummaryEl').innerHTML = errorHtml + summaryHtml;
 
-    // Thingiverse related models
+    // Thingiverse models
     const things = data.thingiverse || [];
-    document.getElementById('thingiverseEl').innerHTML = things.length
-      ? collapsible(
-          'RELATED THINGIVERSE MODELS',
-          things.length,
-          things.map(t => thingiverseItemHtml(t)).join(''),
-          true,
-        )
-      : '';
+    const tvError = data.thingiverse_error || '';
+    if (things.length) {
+      const totalDownloads = things.reduce((s, t) => s + (t.downloads || 0), 0);
+      const totalLikes     = things.reduce((s, t) => s + (t.likes    || 0), 0);
+      const tvMeta = `${things.length} models · ${totalLikes.toLocaleString()} likes · ${totalDownloads.toLocaleString()} downloads`;
+      document.getElementById('thingiverseEl').innerHTML = collapsible(
+        'THINGIVERSE MODELS',
+        tvMeta,
+        things.map(t => thingiverseItemHtml(t)).join(''),
+        true,
+      );
+    } else if (tvError) {
+      document.getElementById('thingiverseEl').innerHTML =
+        `<div style="border:1px solid rgba(247,127,0,.3);border-radius:6px;padding:12px 16px;margin-bottom:12px;font-size:.78em;color:var(--warning)">
+          🖨 Thingiverse offline — ${esc(tvError)}
+        </div>`;
+    } else {
+      document.getElementById('thingiverseEl').innerHTML =
+        `<div style="border:1px solid var(--border);border-radius:6px;padding:12px 16px;margin-bottom:12px;font-size:.78em;color:var(--text-muted)">
+          🖨 No Thingiverse models found for this query
+        </div>`;
+    }
 
     // Cards
     const grid = document.getElementById('productGrid');

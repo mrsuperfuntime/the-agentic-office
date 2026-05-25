@@ -263,20 +263,21 @@ class ResearchAgent:
         )
 
         return {
-            "query":             query,
-            "search_query":      search_query,
-            "search_terms":      search_terms,
-            "timeframe_days":    timeframe_days,
-            "summary":           summary,
-            "ranked_products":   scored_items,
-            "total_results":     total_ebay_results,
-            "price_range":       price_range,
-            "demand_data":       sold_data,
-            "thingiverse":       thingiverse_things,
-            "thingiverse_total": len(thingiverse_things),
-            "ebay_error":        ebay_error,
-            "started_at":        started_at,
-            "completed_at":      datetime.now(timezone.utc).isoformat(),
+            "query":               query,
+            "search_query":        search_query,
+            "search_terms":        search_terms,
+            "timeframe_days":      timeframe_days,
+            "summary":             summary,
+            "ranked_products":     scored_items,
+            "total_results":       total_ebay_results,
+            "price_range":         price_range,
+            "demand_data":         sold_data,
+            "thingiverse":         thingiverse_things,
+            "thingiverse_total":   len(thingiverse_things),
+            "ebay_error":          ebay_error,
+            "thingiverse_error":   thingiverse_error,
+            "started_at":          started_at,
+            "completed_at":        datetime.now(timezone.utc).isoformat(),
         }
 
     async def research_and_rank_async(self, query: str, limit: int = 12, timeframe_days: int = 30) -> dict:

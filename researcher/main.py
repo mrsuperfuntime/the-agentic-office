@@ -186,21 +186,30 @@ async def api_status():
     # ── Thingiverse ───────────────────────────────────────────────────────────
     tv_token = os.getenv("THINGIVERSE_TOKEN", "").strip()
     if not tv_token:
-        results["thingiverse"] = {"ok": False, "reason": "not configured"}
+        results["thingiverse"] = {"ok": False, "reason": "not configured — set THINGIVERSE_TOKEN in .env"}
     else:
         try:
             r = req.get(
-                "https://api.thingiverse.com/search/test",
+                "https://api.thingiverse.com/search/cube",
                 headers={"Authorization": f"Bearer {tv_token}"},
-                params={"per_page": 1, "page": 1},
-                timeout=8,
+                params={"per_page": 1, "page": 1, "type": "things", "sort": "popular"},
+                timeout=10,
             )
-            if r.status_code in (200, 404):
-                results["thingiverse"] = {"ok": True}
+            if r.status_code == 200:
+                try:
+                    body = r.json()
+                    # Response is either a list or {"hits": [...]}
+                    items = body if isinstance(body, list) else body.get("hits", body.get("things", []))
+                    if isinstance(items, list):
+                        results["thingiverse"] = {"ok": True}
+                    else:
+                        results["thingiverse"] = {"ok": False, "reason": f"unexpected response format: {str(body)[:100]}"}
+                except Exception:
+                    results["thingiverse"] = {"ok": False, "reason": "invalid JSON response"}
             elif r.status_code in (401, 403):
-                results["thingiverse"] = {"ok": False, "reason": "token invalid or expired"}
+                results["thingiverse"] = {"ok": False, "reason": "token invalid or expired — regenerate at thingiverse.com/developers"}
             else:
-                results["thingiverse"] = {"ok": False, "reason": f"HTTP {r.status_code}"}
+                results["thingiverse"] = {"ok": False, "reason": f"HTTP {r.status_code}: {r.text[:120]}"}
         except Exception as e:
             results["thingiverse"] = {"ok": False, "reason": str(e)[:80]}
 
