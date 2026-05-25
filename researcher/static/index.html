@@ -1115,7 +1115,7 @@
           </select>
         </div>
         <div class="form-field" id="sfTimeField">
-          <label class="form-label">TIME (UTC 24h)</label>
+          <label class="form-label">TIME (CT 24h) <span style="font-weight:400;color:var(--text-muted);font-size:.85em">Central Time</span></label>
           <input class="form-input" id="sfTime" type="time" value="07:00">
         </div>
         <div class="form-field" id="sfDaysField" style="display:none">
@@ -2102,6 +2102,32 @@
     if (name === 'archive')   loadArchive();
   }
 
+  // ── CT ↔ UTC helpers ─────────────────────────────────────────────────────
+  function _ctOffsetHours() {
+    // Returns how many hours CT is behind UTC (5 during CDT, 6 during CST)
+    const now = new Date();
+    const ctH  = parseInt(new Intl.DateTimeFormat('en-US', { timeZone: 'America/Chicago', hour: 'numeric', hour12: false }).format(now));
+    const utcH = parseInt(new Intl.DateTimeFormat('en-US', { timeZone: 'UTC',             hour: 'numeric', hour12: false }).format(now));
+    const diff = utcH - ctH;
+    return diff < 0 ? diff + 24 : diff;
+  }
+  function ctTimeToUtc(hhmm) {
+    const [h, m] = hhmm.split(':').map(Number);
+    const utcH = (h + _ctOffsetHours()) % 24;
+    return `${String(utcH).padStart(2,'0')}:${String(m).padStart(2,'0')}`;
+  }
+  function utcTimeToCt(hhmm) {
+    if (!hhmm) return '';
+    const [h, m] = hhmm.split(':').map(Number);
+    let ctH = h - _ctOffsetHours();
+    if (ctH < 0) ctH += 24;
+    return `${String(ctH).padStart(2,'0')}:${String(m).padStart(2,'0')}`;
+  }
+  function toCtString(iso) {
+    if (!iso) return null;
+    return new Date(iso).toLocaleString('en-US', { timeZone: 'America/Chicago' }) + ' CT';
+  }
+
   // ── Schedule form ─────────────────────────────────────────────────────────
   function toggleSchedForm() {
     document.getElementById('schedForm').classList.toggle('on');
@@ -2128,7 +2154,7 @@
     if (!name || !query) { alert('Name and query are required.'); return; }
 
     const body = { name, query, mode, schedule_type: type };
-    if (time  && type !== 'interval') body.schedule_time  = time;
+    if (time  && type !== 'interval') body.schedule_time  = ctTimeToUtc(time);
     if (days  && type === 'weekly')   body.schedule_days  = days;
     if (hours && type === 'interval') body.interval_hours = hours;
 
@@ -2161,13 +2187,13 @@
       return;
     }
     el.innerHTML = schedules.map(s => {
-      const typeLabel = s.schedule_type === 'daily'    ? `Daily at ${s.schedule_time} UTC`
-                      : s.schedule_type === 'weekly'   ? `Weekly ${s.schedule_time} UTC`
+      const typeLabel = s.schedule_type === 'daily'    ? `Daily at ${utcTimeToCt(s.schedule_time)} CT`
+                      : s.schedule_type === 'weekly'   ? `Weekly ${utcTimeToCt(s.schedule_time)} CT`
                       : s.schedule_type === 'interval' ? `Every ${s.interval_hours}h`
                       : s.schedule_type;
       const modeLabel = { research: 'RESEARCH', products: 'PRODUCTS', '3d': '3D MODELS', quick: 'QUICK' }[s.mode] || s.mode;
-      const nextRun   = s.next_run ? new Date(s.next_run).toLocaleString() : 'not scheduled';
-      const lastRun   = s.last_run ? new Date(s.last_run).toLocaleString() : 'never';
+      const nextRun   = toCtString(s.next_run) || 'not scheduled';
+      const lastRun   = toCtString(s.last_run) || 'never';
       return `<div class="schedule-item ${s.active ? '' : 'inactive'}" id="sched_${s.id}">
         <div class="schedule-info">
           <div class="schedule-name">${esc(s.name)}</div>
