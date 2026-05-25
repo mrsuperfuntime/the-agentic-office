@@ -18,11 +18,9 @@ _scheduler = BackgroundScheduler(timezone="UTC")
 def _run_job(schedule_id: int, schedule_name: str, query: str, mode: str):
     logger.info("Scheduled job starting: %s (id=%d)", schedule_name, schedule_id)
     try:
-        from tools import ResearchTools
         from research_agent import ResearchAgent
 
-        tools = ResearchTools()
-        agent = ResearchAgent(tools)
+        agent = ResearchAgent()
 
         if mode == "products":
             result = agent.research_and_rank(query, limit=12)
@@ -30,7 +28,7 @@ def _run_job(schedule_id: int, schedule_name: str, query: str, mode: str):
             answer = agent.quick_answer(query)
             result = {"answer": answer}
         else:
-            result = agent.research(query)
+            result = agent.run(query)
 
         db.save_report(schedule_id, schedule_name, query, mode, result, "success")
         logger.info("Scheduled job done: %s", schedule_name)
