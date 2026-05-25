@@ -1700,7 +1700,11 @@
     const pct = Math.round(pop / maxPop * 100);
     const url   = esc(t.url || 'https://www.thingiverse.com');
     const pid   = `mp3d_${rank}`;
-    const meshy = t.meshy_prompt || '';
+    // Use vision-generated prompt if available; otherwise build a descriptive fallback
+    // from name + tags so the GENERATE 3D button always works.
+    const tagWords  = (t.tags || []).slice(0, 5).join(', ');
+    const meshyFallback = `3D printable model: ${t.name || 'object'}${tagWords ? `, featuring ${tagWords}` : ''}. Detailed surface, physically accurate proportions, suitable for FDM printing.`;
+    const meshy = t.meshy_prompt || meshyFallback;
     const tags  = (t.tags || []).slice(0, 4).map(tag =>
       `<span class="model-tag">${esc(tag)}</span>`
     ).join('');
@@ -1728,21 +1732,14 @@
           ${t.collects  > 0 ? `<span style="color:var(--text-muted);font-size:.95em" title="Collections">⊕ ${t.collects.toLocaleString()}</span>`          : ''}
         </div>
         ${tags ? `<div class="model-tags">${tags}</div>` : ''}
-        ${meshy ? `
-        <div style="margin-top:8px">
-          <div class="meshy-label">MESHY AI PROMPT</div>
-          <div class="meshy-prompt" id="${pid}">${esc(meshy)}</div>
-        </div>` : ''}
         <div class="model-actions">
           <a class="prod-btn" href="${url}" target="_blank" rel="noopener"
              style="color:var(--success);border-color:rgba(6,214,160,.3)">🖨 VIEW MODEL</a>
-          ${meshy ? `<button class="prod-btn" onclick="copyPrompt('${pid}', this)">⊕ COPY PROMPT</button>` : ''}
-          ${meshy ? `<button class="prod-btn" style="color:var(--accent);border-color:rgba(0,180,216,.3)"
-             onclick="toggleMeshyPanel('${pid}')">✦ GENERATE 3D</button>` : ''}
+          <button class="prod-btn" style="color:var(--accent);border-color:rgba(0,180,216,.3)"
+             onclick="toggleMeshyPanel('${pid}')">✦ GENERATE 3D</button>
         </div>
-        ${meshy ? `
         <div class="meshy-gen-panel" id="panel_${pid}">
-          <div class="meshy-label">EDIT PROMPT</div>
+          <div class="meshy-label">MESHY AI PROMPT${t.meshy_prompt ? '' : ' <span style="color:var(--text-muted);font-weight:normal">(edit before generating)</span>'}</div>
           <textarea class="meshy-prompt-edit" id="edit_${pid}">${esc(meshy)}</textarea>
           <div class="meshy-style-row">
             <select class="meshy-style-select" id="style_${pid}">
@@ -1760,7 +1757,7 @@
             <div class="meshy-progress-fill" id="pfill_${pid}" style="width:0%"></div>
           </div>
           <div id="result_${pid}"></div>
-        </div>` : ''}
+        </div>
       </div>
     </div>`;
   }
