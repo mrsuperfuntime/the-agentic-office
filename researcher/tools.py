@@ -305,20 +305,25 @@ class ResearchTools:
         logger.info("Enrichment complete: %d/%d things returned detail", found, len(things))
         return things
 
-    def thingiverse_search(self, query: str, limit: int = 8, sort: str = "relevant") -> dict:
+    def thingiverse_search(self, query: str, limit: int = 8, sort: str = "relevant", page: int = 1) -> dict:
         if not self.thingiverse_token:
             return {
                 "error": "Thingiverse token not configured",
                 "hint":  "Set THINGIVERSE_TOKEN in .env — get it at https://www.thingiverse.com/developers",
             }
-        # Always fetch by relevance from the API — the caller sorts client-side.
-        # Sending sort=popular/makes overrides relevance and returns globally trending
-        # models regardless of the search query (benchie, whistle, etc. for any query).
+        # Fetch by relevance from the API — caller handles sorting client-side.
+        # Sending sort=popular/makes to Thingiverse overrides relevance entirely and
+        # returns globally trending models (benchie etc.) regardless of the search query.
+        # Exception: "newest" is passed through because it controls chronological order.
+        api_sort = "newest" if sort == "newest" else None
+        params: dict = {"per_page": min(max(1, limit), 20), "page": page, "type": "things"}
+        if api_sort:
+            params["sort"] = api_sort
         try:
             resp = self._session.get(
                 f"https://api.thingiverse.com/search/{url_quote(query)}",
                 headers={"Authorization": f"Bearer {self.thingiverse_token}"},
-                params={"per_page": min(max(1, limit), 20), "page": 1, "type": "things"},
+                params=params,
                 timeout=15,
             )
             if resp.status_code == 401:
