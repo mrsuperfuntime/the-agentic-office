@@ -294,92 +294,116 @@ class ResearchAgent:
     ) -> dict:
         """
         3D-model-first pipeline:
-          1. LLM generates search terms that are ALL 3D-print specific
-          2. Search Thingiverse across every term, dedupe
-          3. Optionally filter to models added within days_ago days
-          4. Rank by composite popularity score, trim to limit
-          5. Fetch eBay price range as market reference
+          1. LLM generates search terms reflecting both the topic AND the chosen sort metric
+          2. If days_ago > 0: paginate newest-sorted pages, enrich each batch, keep only
+             items within the date window, stop when a page falls fully outside the window.
+          3. If days_ago == 0: single-pass relevance fetch, enrich all at once.
+          4. Apply relevance post-filter (_model_matches_query).
+          5. Sort by user's chosen metric from the collected pool.
+          6. Trim to limit, fetch eBay price reference.
         """
+        from datetime import timedelta
+
         started_at   = datetime.now(timezone.utc).isoformat()
         search_query = _extract_search_query(query)
 
-        # Always search the raw query first — guarantees at least one direct hit
-        expanded  = self._expand_3d_model_queries(search_query, n=3)
+        # Expand search terms — pass sort so terms can reflect the metric
+        # (e.g. "most made" → favour terms like "figurine" that people actually print)
+        expanded  = self._expand_3d_model_queries(search_query, n=3, sort_hint=sort)
         tv_terms  = [search_query] + [t for t in expanded if t.lower() != search_query.lower()]
-        logger.info("3D model search terms: %s (days_ago=%d)", tv_terms, days_ago)
+        logger.info("3D model search terms: %s (sort=%s, days_ago=%d)", tv_terms, sort, days_ago)
 
-        # When a date filter is active, always fetch as "newest" so recent items surface first.
-        # We re-sort by the user's chosen metric after date-filtering.
-        effective_sort = "newest" if days_ago > 0 else sort
-
-        # Fetch more per term when filtering so enough survive the date cut
-        fetch_multiplier = 3 if days_ago > 0 else 1
-        per_term  = min(20, max(4, limit // max(len(tv_terms), 1) + 3) * fetch_multiplier)
-
+        query_words      = {w.lower() for w in search_query.split() if len(w) > 2}
         things:   list[dict] = []
         tv_seen:  set        = set()
         tv_error: str | None = None
+        cutoff_date          = ""
+        date_filter_skipped  = False
 
-        for term in tv_terms:
-            result = self.tools.thingiverse_search(term, limit=per_term, sort=effective_sort)
-            if result.get("error"):
-                tv_error = result["error"]
-                logger.warning("Thingiverse error for %r: %s", term, tv_error)
-                break
-            for t in result.get("things", []):
-                tid = t.get("id")
-                if tid and tid not in tv_seen:
-                    tv_seen.add(tid)
-                    things.append(t)
-
-        # Relevance filter — discard models whose name+tags share no words with the search query.
-        # This catches globally popular models (benchie, whistle, sundial) that Thingiverse
-        # surfaces when sort overrides relevance.
-        query_words = {w.lower() for w in search_query.split() if len(w) > 2}
-        if query_words:
-            relevant = [
-                t for t in things
-                if _model_matches_query(t, query_words)
-            ]
-            # Only apply if we keep a reasonable fraction — don't wipe everything
-            if len(relevant) >= min(3, len(things) // 2 + 1):
-                things = relevant
-            else:
-                logger.info("Relevance filter kept only %d/%d — keeping all", len(relevant), len(things))
-
-        # Enrich every result with full stats + dates via concurrent /things/{id} calls.
-        # The search endpoint returns summary objects only — dates and accurate counts
-        # (views, remixes, etc.) require the detail endpoint.
-        things = self.tools.thingiverse_enrich_dates(things)
-
-        # Apply date filter if requested
-        cutoff_date:   str  = ""
-        date_filter_skipped = False
         if days_ago > 0:
-            from datetime import timedelta
+            # ── Date-filtered path: paginate newest, enrich per-page, collect in window ──
             cutoff      = datetime.now(timezone.utc) - timedelta(days=days_ago)
             cutoff_date = cutoff.strftime("%Y-%m-%d")
+            MAX_PAGES   = 5   # cap at 100 API calls total (5 pages × 20 results × 4 terms)
 
-            dated   = [t for t in things if t.get("added", "") >= cutoff_date]
-            undated = [t for t in things if not t.get("added")]
-            logger.info("Date filter (%s+): %d dated, %d undated, %d too old",
-                        cutoff_date, len(dated), len(undated), len(things) - len(dated) - len(undated))
+            for term in tv_terms:
+                for page in range(1, MAX_PAGES + 1):
+                    result = self.tools.thingiverse_search(term, limit=20, sort="newest", page=page)
+                    if result.get("error"):
+                        tv_error = result["error"]
+                        logger.warning("Thingiverse error for %r p%d: %s", term, page, tv_error)
+                        break
+                    batch = result.get("things", [])
+                    if not batch:
+                        break
 
-            if len(dated) >= 3:
-                things = dated
-            elif things:
-                # Not enough date-tagged results — keep everything and warn
+                    # Enrich this page for dates + stats before filtering
+                    batch = self.tools.thingiverse_enrich_dates(batch)
+
+                    # Collect items within the date window, deduped
+                    found_in_window = 0
+                    for t in batch:
+                        tid = t.get("id")
+                        if tid and tid not in tv_seen:
+                            tv_seen.add(tid)
+                            if t.get("added", "") >= cutoff_date:
+                                things.append(t)
+                                found_in_window += 1
+
+                    # Early-stop: if the oldest dated item on this page is before the
+                    # cutoff, every subsequent page will be even older — no need to continue.
+                    dated_batch = [t for t in batch if t.get("added")]
+                    if dated_batch:
+                        oldest = min(t["added"] for t in dated_batch)
+                        if oldest < cutoff_date:
+                            logger.info("Page %d for %r oldest=%s < cutoff — stopping", page, term, oldest)
+                            break
+
+            logger.info("Date window [%s+]: collected %d things", cutoff_date, len(things))
+            if len(things) < 3:
                 date_filter_skipped = True
-                logger.warning("Too few dated results (%d) — returning all %d unfiltered", len(dated), len(things))
+                logger.warning("Fewer than 3 results in date window — date filter ineffective")
 
-        # Re-sort by user's chosen metric after any date filtering
+            # Apply relevance post-filter
+            if query_words and not date_filter_skipped:
+                relevant = [t for t in things if _model_matches_query(t, query_words)]
+                if len(relevant) >= min(3, len(things) // 2 + 1):
+                    things = relevant
+                else:
+                    logger.info("Relevance filter kept only %d/%d — keeping all", len(relevant), len(things))
+
+        else:
+            # ── No date filter: single relevance-sorted fetch, enrich all at once ──
+            per_term = min(20, max(4, limit // max(len(tv_terms), 1) + 3))
+            for term in tv_terms:
+                result = self.tools.thingiverse_search(term, limit=per_term, sort="relevant")
+                if result.get("error"):
+                    tv_error = result["error"]
+                    logger.warning("Thingiverse error for %r: %s", term, tv_error)
+                    break
+                for t in result.get("things", []):
+                    tid = t.get("id")
+                    if tid and tid not in tv_seen:
+                        tv_seen.add(tid)
+                        things.append(t)
+
+            things = self.tools.thingiverse_enrich_dates(things)
+
+            if query_words:
+                relevant = [t for t in things if _model_matches_query(t, query_words)]
+                if len(relevant) >= min(3, len(things) // 2 + 1):
+                    things = relevant
+                else:
+                    logger.info("Relevance filter kept only %d/%d — keeping all", len(relevant), len(things))
+
+        # Sort the collected pool by the user's chosen metric
         if sort == "makes":
             things.sort(key=lambda t: t.get("makes", 0), reverse=True)
         elif sort == "derivatives":
             things.sort(key=lambda t: t.get("collects", 0), reverse=True)
         elif sort == "newest":
             things.sort(key=lambda t: t.get("added", ""), reverse=True)
-        else:  # popular or fallback
+        else:  # popular / composite
             things.sort(
                 key=lambda t: t.get("makes", 0) * 10 + t.get("likes", 0) * 5 + t.get("downloads", 0) * 2,
                 reverse=True,
@@ -392,20 +416,20 @@ class ResearchAgent:
         ebay_error  = ebay_ref.get("error")
 
         return {
-            "query":             query,
-            "search_query":      search_query,
-            "tv_terms":          tv_terms,
-            "sort":              sort,
+            "query":               query,
+            "search_query":        search_query,
+            "tv_terms":            tv_terms,
+            "sort":                sort,
             "days_ago":            days_ago,
             "cutoff_date":         cutoff_date,
             "date_filter_skipped": date_filter_skipped,
-            "things":            things,
-            "total":             len(things),
-            "ebay_price_ref":    price_range,
-            "ebay_error":        ebay_error,
-            "thingiverse_error": tv_error,
-            "started_at":        started_at,
-            "completed_at":      datetime.now(timezone.utc).isoformat(),
+            "things":              things,
+            "total":               len(things),
+            "ebay_price_ref":      price_range,
+            "ebay_error":          ebay_error,
+            "thingiverse_error":   tv_error,
+            "started_at":          started_at,
+            "completed_at":        datetime.now(timezone.utc).isoformat(),
         }
 
     async def thingiverse_model_search_async(
@@ -516,13 +540,24 @@ class ResearchAgent:
         logger.warning("Thingiverse query expansion failed for %r, using original", query)
         return [query]
 
-    def _expand_3d_model_queries(self, query: str, n: int = 3) -> list[str]:
+    def _expand_3d_model_queries(self, query: str, n: int = 3, sort_hint: str = "popular") -> list[str]:
         """
         Generate n Thingiverse search terms that match actual model names/tags on Thingiverse.
+        sort_hint shapes the kind of objects the LLM suggests:
+          makes/popular → physical objects people print (figurines, props, helmets)
+          derivatives   → base shapes people remix (bases, frames, mounts)
+          newest        → trendy/seasonal variants (recent fandom, seasonal decor)
         DO NOT include meta-words like 'stl', '3d print', 'printable' — those words never
         appear in model names and will produce zero results on Thingiverse's search engine.
         The original query is always prepended as the guaranteed first term by the caller.
         """
+        # Map sort metric to a guidance note for the LLM
+        metric_note = {
+            "makes":       "Favour object types that people actually print in large numbers: figurines, miniatures, props, display stands, helmets, cosplay pieces.",
+            "derivatives": "Favour base shapes or modular designs that people build on: frames, mounts, bases, organizers, holders, customisable shells.",
+            "newest":      "Favour trendy or recently popular variants: seasonal decor, latest fandom releases, current pop-culture characters.",
+        }.get(sort_hint, "Favour a mix of object types: figurines, props, display stands, helmets, busts, organizers.")
+
         resp = self._call_ollama(
             [
                 {
@@ -537,12 +572,13 @@ class ResearchAgent:
                 {
                     "role": "user",
                     "content": (
-                        f"Topic: '{query}'\n\n"
+                        f"Topic: '{query}'\n"
+                        f"Search goal: {metric_note}\n\n"
                         f"Generate {n} Thingiverse search keywords that would match real model names on Thingiverse.\n"
                         f"Rules:\n"
                         f"  - Use natural names that a designer would title their model (e.g. 'Harry Potter Wand', not 'harry potter wand stl')\n"
                         f"  - Keep the franchise/character name in terms where it fits\n"
-                        f"  - Each term targets a different object type: prop, figurine, display stand, helmet, bust, keychain, organizer, etc.\n"
+                        f"  - Each term targets a different object type relevant to the search goal above\n"
                         f"  - 2-4 words max per term\n\n"
                         f"Examples:\n"
                         f"  'harry potter'  → [\"harry potter wand\", \"hogwarts castle\", \"deathly hallows\"]\n"
