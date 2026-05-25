@@ -101,9 +101,10 @@ class ProductResearchRequest(BaseModel):
 
 
 class ThreeDModelSearchRequest(BaseModel):
-    query: str = Field(..., min_length=3, description="Topic or keyword to find 3D printable models for")
-    limit: int = Field(default=12, ge=1, le=20, description="Max models to return")
-    sort:  str = Field(default="popular", description="Thingiverse sort: popular, newest, makes, derivatives")
+    query:    str = Field(..., min_length=3, description="Topic or keyword to find 3D printable models for")
+    limit:    int = Field(default=12, ge=1, le=20, description="Max models to return")
+    sort:     str = Field(default="popular", description="Thingiverse sort: popular, newest, makes, derivatives")
+    days_ago: int = Field(default=0, ge=0, le=365, description="Only show models added within this many days (0 = all time)")
 
 
 class ScheduleCreate(BaseModel):
@@ -321,8 +322,8 @@ async def three_d_model_search(request: ThreeDModelSearchRequest):
     ranks by popularity (makes > downloads > likes), and returns eBay price range as
     market reference for what the physical version sells for.
     """
-    logger.info("3D model search: %s (limit=%d, sort=%s)", request.query[:80], request.limit, request.sort)
-    result = await agent.thingiverse_model_search_async(request.query, limit=request.limit, sort=request.sort)
+    logger.info("3D model search: %s (limit=%d, sort=%s, days_ago=%d)", request.query[:80], request.limit, request.sort, request.days_ago)
+    result = await agent.thingiverse_model_search_async(request.query, limit=request.limit, sort=request.sort, days_ago=request.days_ago)
     return {"status": "success", "data": result}
 
 

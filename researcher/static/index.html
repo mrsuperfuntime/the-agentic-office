@@ -969,6 +969,17 @@
           <option value="derivatives">Remixes</option>
         </select>
       </div>
+      <div class="limit-wrap" id="sinceWrap" style="display:none">
+        <span>SINCE</span>
+        <select id="sinceSelect" style="background:var(--surface2);border:1px solid var(--border2);border-radius:4px;color:var(--success);font-family:var(--mono);font-size:.85em;padding:2px 6px;cursor:pointer">
+          <option value="0" selected>All time</option>
+          <option value="1">Last 24h</option>
+          <option value="7">Last 7 days</option>
+          <option value="14">Last 14 days</option>
+          <option value="30">Last 30 days</option>
+          <option value="90">Last 90 days</option>
+        </select>
+      </div>
       <span class="hint">Ctrl+Enter to submit</span>
     </div>
 
@@ -1236,6 +1247,7 @@
     document.getElementById('limitWrap').style.display     = (m === 'products' || m === '3d') ? '' : 'none';
     document.getElementById('timeframeWrap').style.display = m === 'products' ? '' : 'none';
     document.getElementById('sortWrap').style.display      = m === '3d' ? '' : 'none';
+    document.getElementById('sinceWrap').style.display     = m === '3d' ? '' : 'none';
     const placeholders = {
       products: 'Search for products to rank by recreation potential...  (Ctrl+Enter)',
       '3d':     'Find 3D printable models by topic — baseball, mandalorian, pokemon...  (Ctrl+Enter)',
@@ -1290,12 +1302,13 @@
         saveHistory(q);
         showResults(q, { report: j.answer, step_count: 0, steps: [], sources: [] });
       } else if (mode === '3d') {
-        const limit = parseInt(document.getElementById('limitRange').value);
-        const sort  = document.getElementById('sortSelect').value || 'popular';
+        const limit    = parseInt(document.getElementById('limitRange').value);
+        const sort     = document.getElementById('sortSelect').value || 'popular';
+        const days_ago = parseInt(document.getElementById('sinceSelect').value) || 0;
         const r = await fetch('/research/3d-models', {
           method: 'POST',
           headers: apiHeaders(),
-          body: JSON.stringify({ query: q, limit, sort }),
+          body: JSON.stringify({ query: q, limit, sort, days_ago }),
         });
         if (r.status === 401) throw new Error('API key required — enter it in the banner above');
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
@@ -1603,7 +1616,15 @@
     }
     if (tvTerms.length) {
       const chips = tvTerms.map(t => `<span style="background:var(--surface3);border:1px solid rgba(6,214,160,.3);border-radius:10px;padding:1px 8px;font-size:.75em;color:var(--success)">${esc(t)}</span>`).join(' ');
-      metaHtml += `<div style="color:var(--text-muted);font-size:.72em;margin-bottom:10px;display:flex;align-items:center;gap:6px;flex-wrap:wrap">🖨 searched: ${chips}</div>`;
+      metaHtml += `<div style="color:var(--text-muted);font-size:.72em;margin-bottom:6px;display:flex;align-items:center;gap:6px;flex-wrap:wrap">🖨 searched: ${chips}</div>`;
+    }
+    if (data.days_ago > 0 && data.cutoff_date) {
+      const sinceLabels = { 1: 'Last 24h', 7: 'Last 7 days', 14: 'Last 14 days', 30: 'Last 30 days', 90: 'Last 90 days' };
+      const label = sinceLabels[data.days_ago] || `Last ${data.days_ago} days`;
+      metaHtml += `<div style="font-size:.72em;color:var(--text-muted);margin-bottom:10px;display:flex;align-items:center;gap:6px">
+        📅 Date filter: <span style="background:rgba(6,214,160,.1);border:1px solid rgba(6,214,160,.3);border-radius:10px;padding:1px 8px;color:var(--success)">${label} — added after ${esc(data.cutoff_date)}</span>
+        ${things.length === 0 ? '<span style="color:var(--warning)">No models found in this window — try a wider range</span>' : ''}
+      </div>`;
     }
     if (ebayError) {
       metaHtml += `<div style="font-size:.72em;color:var(--text-muted);margin-bottom:4px">eBay market reference unavailable — ${esc(ebayError)}</div>`;
@@ -1648,7 +1669,10 @@
       </div>
       <div class="model-body">
         <div class="model-name">${esc(t.name || 'Untitled')}</div>
-        ${t.creator ? `<div class="model-creator">by ${esc(t.creator)}</div>` : ''}
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+          ${t.creator ? `<span class="model-creator">by ${esc(t.creator)}</span>` : ''}
+          ${t.added ? `<span style="font-size:.6em;color:var(--text-muted)">📅 ${esc(t.added)}</span>` : ''}
+        </div>
         <div class="model-pop-bar"><div class="model-pop-fill" style="width:${pct}%"></div></div>
         <div class="model-stats">
           ${t.downloads > 0 ? `<span class="model-stat-dl" title="Downloads">⬇ ${t.downloads.toLocaleString()}</span>` : ''}

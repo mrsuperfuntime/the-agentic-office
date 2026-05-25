@@ -282,26 +282,36 @@ class ResearchAgent:
 
     # ── 3D model search (Thingiverse-first) ──────────────────────────────────
 
-    def thingiverse_model_search(self, query: str, limit: int = 12, sort: str = "popular") -> dict:
+    def thingiverse_model_search(
+        self, query: str, limit: int = 12, sort: str = "popular", days_ago: int = 0
+    ) -> dict:
         """
         3D-model-first pipeline:
           1. LLM generates search terms that are ALL 3D-print specific
-          2. Search Thingiverse across every term, dedupe, rank by popularity
-          3. Fetch eBay price range as market reference (what does this category sell for?)
+          2. Search Thingiverse across every term, dedupe
+          3. Optionally filter to models added within days_ago days
+          4. Rank by composite popularity score, trim to limit
+          5. Fetch eBay price range as market reference
         """
         started_at   = datetime.now(timezone.utc).isoformat()
         search_query = _extract_search_query(query)
 
         tv_terms = self._expand_3d_model_queries(search_query, n=4)
-        logger.info("3D model search terms: %s", tv_terms)
+        logger.info("3D model search terms: %s (days_ago=%d)", tv_terms, days_ago)
 
-        per_term  = max(4, limit // max(len(tv_terms), 1) + 3)
+        # When filtering by recent date, fetch more per term to ensure enough survive the filter
+        fetch_multiplier = 3 if days_ago > 0 else 1
+        per_term  = min(20, max(4, limit // max(len(tv_terms), 1) + 3) * fetch_multiplier)
+
+        # Use "newest" sort when filtering by recent date so we surface recent items first
+        effective_sort = "newest" if days_ago > 0 and sort == "popular" else sort
+
         things:   list[dict] = []
         tv_seen:  set        = set()
         tv_error: str | None = None
 
         for term in tv_terms:
-            result = self.tools.thingiverse_search(term, limit=per_term, sort=sort)
+            result = self.tools.thingiverse_search(term, limit=per_term, sort=effective_sort)
             if result.get("error"):
                 tv_error = result["error"]
                 logger.warning("Thingiverse error for %r: %s", term, tv_error)
@@ -312,9 +322,18 @@ class ResearchAgent:
                     tv_seen.add(tid)
                     things.append(t)
 
-        # Composite popularity score: makes > downloads > likes (makes = someone actually printed it)
+        # Apply date filter if requested
+        cutoff_date: str = ""
+        if days_ago > 0:
+            from datetime import timedelta
+            cutoff = datetime.now(timezone.utc) - timedelta(days=days_ago)
+            cutoff_date = cutoff.strftime("%Y-%m-%d")
+            things = [t for t in things if t.get("added", "") >= cutoff_date]
+            logger.info("Date filter (%s+): %d models remaining", cutoff_date, len(things))
+
+        # Composite popularity score: makes > likes > downloads
         things.sort(
-            key=lambda t: t.get("makes", 0) * 10 + t.get("downloads", 0) * 2 + t.get("likes", 0) * 5,
+            key=lambda t: t.get("makes", 0) * 10 + t.get("likes", 0) * 5 + t.get("downloads", 0) * 2,
             reverse=True,
         )
         things = things[:limit]
@@ -325,21 +344,25 @@ class ResearchAgent:
         ebay_error  = ebay_ref.get("error")
 
         return {
-            "query":        query,
-            "search_query": search_query,
-            "tv_terms":     tv_terms,
-            "sort":         sort,
-            "things":       things,
-            "total":        len(things),
-            "ebay_price_ref": price_range,
-            "ebay_error":   ebay_error,
+            "query":             query,
+            "search_query":      search_query,
+            "tv_terms":          tv_terms,
+            "sort":              sort,
+            "days_ago":          days_ago,
+            "cutoff_date":       cutoff_date,
+            "things":            things,
+            "total":             len(things),
+            "ebay_price_ref":    price_range,
+            "ebay_error":        ebay_error,
             "thingiverse_error": tv_error,
-            "started_at":   started_at,
-            "completed_at": datetime.now(timezone.utc).isoformat(),
+            "started_at":        started_at,
+            "completed_at":      datetime.now(timezone.utc).isoformat(),
         }
 
-    async def thingiverse_model_search_async(self, query: str, limit: int = 12, sort: str = "popular") -> dict:
-        return await asyncio.to_thread(self.thingiverse_model_search, query, limit, sort)
+    async def thingiverse_model_search_async(
+        self, query: str, limit: int = 12, sort: str = "popular", days_ago: int = 0
+    ) -> dict:
+        return await asyncio.to_thread(self.thingiverse_model_search, query, limit, sort, days_ago)
 
     # ── Query expansion ───────────────────────────────────────────────────────
 
@@ -409,13 +432,14 @@ class ResearchAgent:
                         f"eBay context (what people buy): {ebay_terms}\n\n"
                         f"Generate {n} Thingiverse search terms for 3D PRINTABLE items a fan or collector "
                         f"would want to make related to this topic.\n"
-                        f"Think about the SPORT, FRANCHISE, or THEME — not just the specific person or item.\n"
+                        f"Keep the EXACT franchise or character name in terms where it naturally fits.\n"
+                        f"Also think about the SPORT, FRANCHISE, or THEME for accessory-type items.\n"
                         f"Focus on: display stands, holders, organizers, helmets, busts, figurines, props, "
                         f"trophies, wall mounts, and accessories.\n"
                         f"Examples:\n"
-                        f"  'shohei ohtani' → [\"baseball card display stand\", \"baseball helmet replica\", \"baseball bat wall mount\"]\n"
-                        f"  'mandalorian'   → [\"mandalorian helmet\", \"star wars figurine\", \"beskar armor prop\"]\n"
-                        f"  'pokemon'       → [\"pokemon figure\", \"pokeball display case\", \"pokedex prop\"]\n"
+                        f"  'harry potter'  → [\"harry potter wand\", \"harry potter figurine\", \"hogwarts display stand\"]\n"
+                        f"  'shohei ohtani' → [\"baseball card display stand\", \"shohei ohtani figurine\", \"baseball helmet replica\"]\n"
+                        f"  'mandalorian'   → [\"mandalorian helmet\", \"mandalorian figurine\", \"beskar armor prop\"]\n"
                         f"Return JSON array only."
                     ),
                 },
@@ -462,14 +486,15 @@ class ResearchAgent:
                         f"Topic: '{query}'\n\n"
                         f"Generate {n} Thingiverse search queries for 3D printable models related to this topic.\n"
                         f"Rules:\n"
-                        f"  - Every term MUST include a 3D print context word: stl, 3d print, printable, model, print, replica, prop, figure, stand, holder, mount\n"
-                        f"  - Think about the CATEGORY and FAN COMMUNITY, not just the specific person/item\n"
-                        f"  - Each term should find different types of printable items (e.g. wearable, display, figurine, accessory)\n"
+                        f"  - Keep the EXACT topic name or franchise name in EVERY term — do NOT replace it with a generic category word\n"
+                        f"  - Every term MUST also include a 3D print context word: stl, 3d print, printable, model, print, replica, prop, figure, stand, holder, mount\n"
+                        f"  - Each term should target a different TYPE of printable item (wearable, display, figurine, accessory, prop, etc.)\n"
                         f"  - Keep each query to 3-5 words\n\n"
                         f"Examples:\n"
-                        f"  'shohei ohtani'  → [\"baseball card holder 3d print\", \"baseball helmet model\", \"baseball display stand stl\", \"baseball figurine printable\"]\n"
-                        f"  'mandalorian'    → [\"mandalorian helmet stl\", \"mandalorian armor 3d print\", \"star wars figure printable\", \"beskar prop model\"]\n"
-                        f"  'pokemon'        → [\"pokemon figure 3d print\", \"pokeball display stand stl\", \"pokedex prop printable\", \"pokemon card holder model\"]\n\n"
+                        f"  'harry potter'   → [\"harry potter wand stl\", \"harry potter figure 3d print\", \"hogwarts prop printable\", \"harry potter display stand model\"]\n"
+                        f"  'shohei ohtani'  → [\"shohei ohtani figurine 3d print\", \"baseball card holder stl\", \"baseball helmet model\", \"baseball display stand printable\"]\n"
+                        f"  'mandalorian'    → [\"mandalorian helmet stl\", \"mandalorian armor 3d print\", \"mandalorian figure printable\", \"beskar prop model\"]\n"
+                        f"  'pokemon'        → [\"pokemon figure 3d print\", \"pokeball display stand stl\", \"pikachu model printable\", \"pokemon card holder model\"]\n\n"
                         f"Return JSON array only."
                     ),
                 },
