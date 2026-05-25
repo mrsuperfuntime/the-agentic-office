@@ -537,6 +537,15 @@
     .limit-wrap input[type=range] { width: 100px; accent-color: var(--accent); cursor: pointer; }
     .limit-val { color: var(--accent); font-weight: 700; min-width: 18px; }
 
+    /* ── API status chips ──────────────────────────── */
+    .api-chip {
+      font-size: 0.62em; padding: 2px 8px; border-radius: 10px;
+      font-family: var(--display); letter-spacing: 0.06em;
+      border: 1px solid; white-space: nowrap;
+    }
+    .api-chip.ok  { color: var(--success); border-color: rgba(6,214,160,.4); background: rgba(6,214,160,.08); }
+    .api-chip.off { color: var(--text-muted); border-color: var(--border); background: transparent; }
+
     /* ── API Key prompt ────────────────────────────── */
     .key-banner {
       background: rgba(247,127,0,.08);
@@ -761,9 +770,12 @@
         <div class="header-sub">Local Ollama Research Agent &nbsp;·&nbsp; Web · Wikipedia · eBay</div>
       </div>
     </div>
-    <div class="status-row">
-      <div class="dot" id="dot"></div>
-      <span id="statusLabel">checking...</span>
+    <div style="display:flex;flex-direction:column;align-items:flex-end;gap:6px">
+      <div class="status-row">
+        <div class="dot" id="dot"></div>
+        <span id="statusLabel">checking...</span>
+      </div>
+      <div style="display:flex;gap:6px" id="apiChips"></div>
     </div>
   </div>
 
@@ -788,8 +800,7 @@
   <!-- Input -->
   <div class="input-panel">
     <div class="mode-row">
-      <button class="mode-btn active" id="btnFull"     onclick="setMode('full')">FULL RESEARCH</button>
-      <button class="mode-btn"        id="btnProducts" onclick="setMode('products')">PRODUCT RESEARCH</button>
+      <button class="mode-btn active" id="btnProducts" onclick="setMode('products')">PRODUCT RESEARCH</button>
       <button class="mode-btn"        id="btnQuick"    onclick="setMode('quick')">QUICK ANSWER</button>
     </div>
 
@@ -962,7 +973,7 @@
   ];
 
   // ── State ───────────────────────────────────────────────────────────────
-  let mode = 'full';
+  let mode = 'products';
   let busy = false;
   let elapsedTimer = null;
   let reportText = '';
@@ -973,6 +984,7 @@
   document.addEventListener('DOMContentLoaded', async () => {
     await checkApiConfig();
     checkHealth();
+    checkStatus();
     renderHistory();
     document.getElementById('query').addEventListener('keydown', e => {
       if (e.ctrlKey && e.key === 'Enter') { e.preventDefault(); submit(); }
@@ -1030,20 +1042,33 @@
     return h;
   }
 
+  // ── API status chips ────────────────────────────────────────────────────
+  async function checkStatus() {
+    try {
+      const r = await fetch('/status');
+      const d = await r.json();
+      const chips = document.getElementById('apiChips');
+      chips.innerHTML = [
+        ['EBAY',        d.ebay_configured],
+        ['THINGIVERSE', d.thingiverse_configured],
+      ].map(([label, ok]) =>
+        `<span class="api-chip ${ok ? 'ok' : 'off'}">${label}</span>`
+      ).join('');
+    } catch {}
+  }
+
   // ── Mode toggle ─────────────────────────────────────────────────────────
   function setMode(m) {
     mode = m;
-    document.getElementById('btnFull').classList.toggle('active', m === 'full');
     document.getElementById('btnProducts').classList.toggle('active', m === 'products');
     document.getElementById('btnQuick').classList.toggle('active', m === 'quick');
-    document.getElementById('stepsWrap').style.display = m === 'full' ? '' : 'none';
+    document.getElementById('stepsWrap').style.display = 'none';
     document.getElementById('limitWrap').style.display = m === 'products' ? '' : 'none';
     const placeholders = {
-      full:     'What do you want to research?  (Ctrl+Enter to submit)',
-      products: 'Search for products to rank by Meshy AI recreation potential...  (Ctrl+Enter)',
+      products: 'Search for products to rank by recreation potential...  (Ctrl+Enter)',
       quick:    'Ask a quick question...  (Ctrl+Enter to submit)',
     };
-    document.getElementById('query').placeholder = placeholders[m] || placeholders.full;
+    document.getElementById('query').placeholder = placeholders[m] || placeholders.products;
   }
 
   // ── Health ──────────────────────────────────────────────────────────────
@@ -1091,7 +1116,7 @@
         const j = await r.json();
         saveHistory(q);
         showResults(q, { report: j.answer, step_count: 0, steps: [], sources: [] });
-      } else if (mode === 'products') {
+      } else {
         const limit = parseInt(document.getElementById('limitRange').value);
         const r = await fetch('/research/products', {
           method: 'POST',
@@ -1103,18 +1128,6 @@
         const j = await r.json();
         saveHistory(q);
         showProducts(q, j.data);
-      } else {
-        const steps = parseInt(document.getElementById('stepsRange').value);
-        const r = await fetch('/research', {
-          method: 'POST',
-          headers: apiHeaders(),
-          body: JSON.stringify({ query: q, max_steps: steps }),
-        });
-        if (r.status === 401) throw new Error('API key required — enter it in the banner above');
-        if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        const j = await r.json();
-        saveHistory(q);
-        showResults(q, j.data);
       }
     } catch (e) {
       showError('Request failed: ' + e.message + '. Is the researcher service running on port 8009?');
