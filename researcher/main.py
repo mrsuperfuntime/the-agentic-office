@@ -373,7 +373,9 @@ async def meshy_image_to_3d(request: MeshyImageRequest):
         raise HTTPException(400, "MESHY_API_KEY not configured — add it to .env on Chauncy")
     result = await asyncio.to_thread(meshy.image_to_3d, request.image_url, request.enable_pbr)
     if result.get("error"):
-        raise HTTPException(502, result["error"])
+        detail = result.get("detail", "")
+        msg    = result["error"] + (f" — {detail}" if detail else "")
+        raise HTTPException(502, msg)
     return {"status": "success", "data": result}
 
 
