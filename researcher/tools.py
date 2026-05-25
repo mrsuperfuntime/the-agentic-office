@@ -312,9 +312,8 @@ class ResearchTools:
         try:
             base   = "https://api.sandbox.ebay.com" if self.ebay_env == "sandbox" else "https://api.ebay.com"
             params: dict[str, Any] = {
-                "q":           query,
-                "limit":       min(max(1, limit), 20),
-                "fieldgroups": "MATCHING_ITEMS,EXTENDED",
+                "q":     query,
+                "limit": min(max(1, limit), 20),
             }
             if condition == "new":
                 params["filter"] = "conditionIds:{1000}"
@@ -324,18 +323,30 @@ class ResearchTools:
             resp = self._session.get(
                 f"{base}/buy/browse/v1/item_summary/search",
                 headers={
-                    "Authorization":          f"Bearer {token}",
+                    "Authorization":           f"Bearer {token}",
                     "X-EBAY-C-MARKETPLACE-ID": "EBAY_US",
+                    "Content-Type":            "application/json",
                 },
                 params=params,
                 timeout=15,
             )
 
             if resp.status_code != 200:
-                return {"error": f"eBay API returned {resp.status_code}", "detail": resp.text[:300]}
+                logger.error("eBay Browse API %s for %r: %s", resp.status_code, query, resp.text[:400])
+                return {"error": f"eBay Browse API returned HTTP {resp.status_code}", "detail": resp.text[:300]}
 
-            data   = resp.json()
+            data = resp.json()
+
+            # eBay sometimes returns 200 with an errors array instead of results
+            api_errors = data.get("errors") or []
+            if api_errors:
+                msg = api_errors[0].get("message", str(api_errors[0]))
+                logger.error("eBay Browse API error in 200 response for %r: %s", query, msg)
+                return {"error": f"eBay Browse API: {msg}", "detail": str(api_errors[:2])}
+
             items  = data.get("itemSummaries", [])
+            if not items:
+                logger.info("eBay Browse API returned 0 items for %r (total=%s)", query, data.get("total", 0))
             parsed: list[dict] = []
             prices: list[float] = []
 

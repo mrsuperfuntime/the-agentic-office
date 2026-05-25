@@ -184,21 +184,43 @@ async def api_status():
     ebay_cert = os.getenv("EBAY_CERT_ID", "").strip()
     ebay_env  = os.getenv("EBAY_ENV", "production").lower()
     if not ebay_id or not ebay_cert:
-        results["ebay"] = {"ok": False, "reason": "not configured"}
+        results["ebay"] = {"ok": False, "reason": "not configured — set EBAY_APP_ID and EBAY_CERT_ID in .env"}
     else:
         try:
             base  = "https://api.sandbox.ebay.com" if ebay_env == "sandbox" else "https://api.ebay.com"
             creds = base64.b64encode(f"{ebay_id}:{ebay_cert}".encode()).decode()
-            r = req.post(
+            # Step 1: get OAuth token
+            tr = req.post(
                 f"{base}/identity/v1/oauth2/token",
                 headers={"Authorization": f"Basic {creds}", "Content-Type": "application/x-www-form-urlencoded"},
                 data="grant_type=client_credentials&scope=https://api.ebay.com/oauth/api_scope",
                 timeout=8,
             )
-            if r.status_code == 200 and r.json().get("access_token"):
-                results["ebay"] = {"ok": True}
+            if tr.status_code != 200 or not tr.json().get("access_token"):
+                results["ebay"] = {"ok": False, "reason": tr.json().get("error_description", f"OAuth HTTP {tr.status_code}")[:80]}
             else:
-                results["ebay"] = {"ok": False, "reason": r.json().get("error_description", f"HTTP {r.status_code}")[:80]}
+                token = tr.json()["access_token"]
+                # Step 2: test actual Browse API search
+                sr = req.get(
+                    f"{base}/buy/browse/v1/item_summary/search",
+                    headers={
+                        "Authorization":           f"Bearer {token}",
+                        "X-EBAY-C-MARKETPLACE-ID": "EBAY_US",
+                        "Content-Type":            "application/json",
+                    },
+                    params={"q": "test", "limit": 1},
+                    timeout=8,
+                )
+                if sr.status_code == 200:
+                    sd = sr.json()
+                    api_errors = sd.get("errors") or []
+                    if api_errors:
+                        msg = api_errors[0].get("message", str(api_errors[0]))[:100]
+                        results["ebay"] = {"ok": False, "reason": f"Browse API error: {msg}"}
+                    else:
+                        results["ebay"] = {"ok": True, "env": ebay_env}
+                else:
+                    results["ebay"] = {"ok": False, "reason": f"Browse API HTTP {sr.status_code}: {sr.text[:120]}"}
         except Exception as e:
             results["ebay"] = {"ok": False, "reason": str(e)[:80]}
 
