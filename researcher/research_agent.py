@@ -628,47 +628,61 @@ class ResearchAgent:
 
     # ── Meshy AI prompt generation ────────────────────────────────────────────
 
-    def _text_meshy_prompt(self, name: str, tags: list[str], creator: str = "") -> str:
+    def _text_meshy_prompt(self, name: str, tags: list[str], creator: str = "",
+                           description: str = "") -> str:
         """
-        Use the text LLM to write a proper Meshy AI prompt from model name + tags.
-        Always runs — no vision model required. Vision can then improve on this.
+        Use the text LLM to write a specific, usable Meshy AI prompt from all
+        available model metadata: name, tags, creator, and Thingiverse description.
         """
-        tag_str = ", ".join(tags[:8]) if tags else ""
-        by_str  = f" by {creator}" if creator else ""
+        tag_str  = ", ".join(tags[:10]) if tags else "none"
+        desc_str = description[:500].strip() if description else ""
+
+        context_block = f"Name: {name}\nTags: {tag_str}"
+        if creator:
+            context_block += f"\nCreator: {creator}"
+        if desc_str:
+            context_block += f"\nDescription: {desc_str}"
+
         resp = self._call_ollama(
             [
                 {
                     "role": "system",
                     "content": (
                         "You write Meshy AI text-to-3D generation prompts. "
-                        "A good Meshy prompt is 2-3 sentences that describe the object's identity, "
-                        "physical shape and geometry, surface details, and visual style. "
-                        "Be specific — name the character/object, describe key features, mention art style. "
-                        "Output only the prompt text, no preamble or explanation."
+                        "Your output will be pasted directly into Meshy AI to generate a 3D model — "
+                        "it must be specific and visual, not generic. "
+                        "A great prompt has 3 parts: (1) what the object IS with its exact identity, "
+                        "(2) key physical details — shape, proportions, surface texture, materials, "
+                        "distinctive features, (3) art style and quality level. "
+                        "Use descriptive adjectives. Name the character/IP/theme explicitly. "
+                        "Do NOT say 'suitable for FDM printing' or 'physically accurate'. "
+                        "Output ONLY the prompt — no explanation, no preamble, no quotes around it."
                     ),
                 },
                 {
                     "role": "user",
                     "content": (
-                        f"Write a Meshy AI text-to-3D prompt for this 3D printable model:\n"
-                        f"Name: {name}{by_str}\n"
-                        f"Tags: {tag_str or 'none'}\n\n"
-                        f"Good examples:\n"
-                        f"  Batman bust → \"Batman bust sculpture, dark knight with iconic pointed bat-eared cowl, stern chiseled jaw, detailed armor texture on the cowl surface, dramatic comic-book style, museum display quality, high polygon detail.\"\n"
-                        f"  Mandalorian helmet → \"Mandalorian warrior helmet, beskar steel full-face visor with T-shaped visor slit, battle-worn scratched metal surface, Star Wars universe, realistic sci-fi prop quality, highly detailed.\"\n"
-                        f"  Pikachu figure → \"Pikachu standing figure, round yellow body with red cheek circles, pointed ears with black tips, happy expression, smooth cartoon-style surface, Pokemon character, collectible figurine scale.\"\n\n"
-                        f"Write the prompt for '{name}':"
+                        f"Write a Meshy AI text-to-3D prompt for this Thingiverse model:\n\n"
+                        f"{context_block}\n\n"
+                        f"Examples of GOOD prompts:\n"
+                        f"- \"Batman bust, dark knight superhero with iconic pointed bat-eared cowl, stern chiseled jaw, deep-set eyes under a furrowed brow, textured matte black armor on the cowl and collar, dramatic comic-book realism style, museum display quality\"\n"
+                        f"- \"Mandalorian warrior helmet, full-face beskar steel visor with narrow T-shaped eye slit, battle-worn surface with scratches and dents, riveted edges, Star Wars sci-fi aesthetic, hyper-realistic metal prop\"\n"
+                        f"- \"Articulated dragon figure, eastern-style long serpentine body with overlapping scale segments, four clawed legs, flowing whiskers, detailed horn ridges along spine, fantasy creature, paintable tabletop miniature style\"\n\n"
+                        f"Now write the prompt for '{name}':"
                     ),
                 },
             ],
             use_tools=False,
         )
         result = (resp or {}).get("message", {}).get("content", "").strip()
-        # Strip any accidental preamble the LLM adds
-        for prefix in ("here is", "here's", "prompt:", "meshy prompt:"):
+        # Strip accidental preamble
+        for prefix in ("here is", "here's", "prompt:", "meshy prompt:", "sure,", "certainly,"):
             if result.lower().startswith(prefix):
-                result = result[len(prefix):].lstrip(' :"')
-        return result if len(result) > 20 else ""
+                result = result[len(prefix):].lstrip(' :"\'')
+        # Strip surrounding quotes the LLM sometimes adds
+        if result.startswith('"') and result.endswith('"'):
+            result = result[1:-1].strip()
+        return result if len(result) > 30 else ""
 
     def _batch_generate_meshy_prompts(self, things: list[dict], max_workers: int = 4) -> list[dict]:
         """Generate LLM-written Meshy prompts for all things concurrently, then optionally
@@ -685,6 +699,7 @@ class ResearchAgent:
                     t.get("name", ""),
                     t.get("tags", []),
                     t.get("creator", ""),
+                    t.get("description", ""),
                 ): i
                 for i, t in enumerate(things)
             }

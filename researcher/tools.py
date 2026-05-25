@@ -300,6 +300,13 @@ class ResearchTools:
             t["views"]     = int(d.get("view_count",     0) or 0)
             t["remixes"]   = int(d.get("remix_count",    0) or 0)
             t["collects"]  = int(d.get("collect_count",  t.get("collects",  0)) or 0)
+            # Description — strip HTML tags, cap at 600 chars for LLM context
+            import re as _re
+            raw_desc = d.get("description") or d.get("details") or ""
+            clean_desc = _re.sub(r"<[^>]+>", " ", raw_desc)
+            clean_desc = _re.sub(r"\s{2,}", " ", clean_desc).strip()
+            if clean_desc:
+                t["description"] = clean_desc[:600]
 
         found = sum(1 for d in detail_map.values() if d)
         logger.info("Enrichment complete: %d/%d things returned detail", found, len(things))
