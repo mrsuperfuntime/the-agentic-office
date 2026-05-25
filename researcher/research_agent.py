@@ -47,39 +47,37 @@ Research process
 Always cite sources. Be thorough, factual, and concise.
 """
 
-_SCORER_PROMPT = """\
-You are an expert in 3D design, Meshy AI, and 3D printing markets.
+_CROSS_REF_PROMPT = """\
+You are a product recreation analyst specializing in 3D printing opportunities.
 
-Score each product for its potential to be recreated and redesigned as a 3D model
-using Meshy AI (a text-to-3D AI generator) and sold or distributed as a custom product.
+Your job: cross-reference what SELLS on eBay with what can be 3D PRINTED on Thingiverse
+to identify the highest-value recreation opportunities using Meshy AI.
 
-Scoring criteria (1-10):
-  • 3D modelability    — can its shape be accurately reproduced as a 3D mesh?
-  • Meshy AI fit       — does it match what Meshy excels at? (figures, props, decor, toys)
-  • Market opportunity — is there demand for custom or improved versions?
-  • Printability       — can it be 3D printed with standard PLA/resin?
-  • Thingiverse signal — if similar models exist on Thingiverse with high like counts,
-                         that confirms feasibility and demand — boost the score accordingly
+The best opportunity = HIGH eBay demand × HIGH Thingiverse feasibility.
+
+Score each opportunity 1-10 using:
+  • eBay demand      — sold count, GMV, price point (higher = more market)
+  • Print feasibility — Thingiverse downloads/makes/likes (higher = proven printable)
+  • Meshy AI fit     — figurines, props, decor, toys, helmets score HIGH; electronics, fabric score LOW
+  • Margin potential — custom/improved version vs commodity price
 
 Tier definitions:
-  HIGH   (7-10): figurines, statues, busts, action figures, props, cosplay items,
-                 decorative objects, vases, miniatures, game pieces, jewelry pendants
-  MEDIUM (4-6):  functional parts with some printable components, accessories,
-                 mixed-material products, simple tools/cases
-  LOW    (1-3):  electronics, clothing/fabric, paper goods, food, complex machinery,
-                 transparent/glass items
+  HIGH   (7-10): proven market + proven printability + good Meshy fit
+  MEDIUM (4-6):  one signal strong, other moderate
+  LOW    (1-3):  weak demand or not printable
 
-Respond ONLY with a valid JSON array — no markdown, no explanation outside the JSON:
+Respond ONLY with a valid JSON array, highest score first — no markdown, no text outside JSON:
 [
   {
-    "index": 1,
-    "score": 8,
+    "opportunity": "Short product category name (3-6 words max)",
+    "score": 9,
     "tier": "high",
-    "reasons": ["solid figurine shape", "high collector demand", "1200+ likes on Thingiverse confirms demand"],
-    "meshy_prompt": "3D model of [specific description], detailed surface, game-ready mesh, stylized art style",
-    "redesign_ideas": "Could add articulated joints, LED cavity in base, variant colorways"
-  },
-  ...
+    "ebay_indices": [2, 5],
+    "thingiverse_indices": [1, 3],
+    "reasons": ["234 eBay sold in 30 days", "15K Thingiverse downloads proves print demand"],
+    "meshy_prompt": "3D model of [specific description], detailed surface, game-ready mesh, [art style]",
+    "redesign_ideas": "Specific improvements: variant colorways, LED cavity, modular parts"
+  }
 ]
 """
 
@@ -238,21 +236,8 @@ class ResearchAgent:
         # Step 4: Real eBay sold data (Finding API on primary term)
         sold_data = self.tools.ebay_sold_data(search_query, timeframe_days=timeframe_days)
 
-        # Step 5: Score each product for recreation potential
-        scored_items: list[dict] = []
-        if items:
-            scores = self._score_products_for_recreation(items, thingiverse_things, sold_data)
-            for i, item in enumerate(items):
-                score_data = scores.get(i + 1, {})
-                scored_items.append({
-                    **item,
-                    "recreation_score":   score_data.get("score", 0),
-                    "recreation_tier":    score_data.get("tier", "unknown"),
-                    "recreation_reasons": score_data.get("reasons", []),
-                    "meshy_prompt":       score_data.get("meshy_prompt", ""),
-                    "redesign_ideas":     score_data.get("redesign_ideas", ""),
-                })
-
+        # Step 5: Cross-reference eBay demand × Thingiverse feasibility
+        scored_items = self._cross_reference_score(items, thingiverse_things, sold_data)
         scored_items.sort(key=lambda x: x.get("recreation_score", 0), reverse=True)
 
         # Step 6: LLM summary
@@ -329,85 +314,113 @@ class ResearchAgent:
         logger.warning("Query expansion failed for %r, using original", query)
         return [query]
 
-    # ── Recreation scoring ────────────────────────────────────────────────────
+    # ── Cross-platform opportunity scoring ───────────────────────────────────
 
-    def _score_products_for_recreation(
+    def _cross_reference_score(
         self,
-        items: list[dict],
-        thingiverse_things: list[dict] | None = None,
-        sold_data: dict | None = None,
-    ) -> dict[int, dict]:
+        ebay_items: list[dict],
+        thingiverse_things: list[dict],
+        sold_data: dict,
+    ) -> list[dict]:
         """
-        Batch-score all items in a single LLM call.
-        Returns a dict keyed by 1-based index.
+        Cross-reference eBay demand with Thingiverse feasibility to produce a
+        ranked list of recreation opportunities. Each opportunity links the
+        best matching eBay listing and Thingiverse model as evidence.
         """
-        product_list = [
+        ebay_list = [
+            {
+                "index":    i + 1,
+                "title":    item.get("title", "")[:100],
+                "price":    item.get("price", ""),
+                "category": item.get("category", ""),
+            }
+            for i, item in enumerate(ebay_items)
+        ]
+        tv_list = [
             {
                 "index":     i + 1,
-                "title":     item.get("title", "")[:120],
-                "category":  item.get("category", ""),
-                "price":     item.get("price", ""),
-                "condition": item.get("condition", ""),
+                "name":      t.get("name", "")[:80],
+                "likes":     t.get("likes", 0),
+                "downloads": t.get("downloads", 0),
+                "makes":     t.get("makes", 0),
+                "tags":      t.get("tags", [])[:4],
             }
-            for i, item in enumerate(items)
+            for i, t in enumerate(thingiverse_things)
         ]
 
-        thingiverse_context = ""
-        if thingiverse_things:
-            tv_summary = [
-                {
-                    "name":      t.get("name", "")[:80],
-                    "likes":     t.get("likes", 0),
-                    "downloads": t.get("downloads", 0),
-                    "makes":     t.get("makes", 0),
-                    "collects":  t.get("collects", 0),
-                    "tags":      t.get("tags", [])[:5],
-                }
-                for t in thingiverse_things[:6]
-            ]
-            thingiverse_context = (
-                f"\n\nThingiverse models for this category:\n"
-                f"{json.dumps(tv_summary, indent=2)}\n"
-                f"Use likes, downloads, and makes as evidence of 3D print demand and feasibility."
-            )
-
         sold_context = ""
-        if sold_data and sold_data.get("sold_count", 0) > 0:
+        if sold_data.get("sold_count", 0) > 0:
             sold_context = (
-                f"\n\neBay sold data ({sold_data.get('timeframe_days', 30)} days): "
+                f"\neBay sold data ({sold_data.get('timeframe_days', 30)} days): "
                 f"{sold_data['sold_count']} units sold — "
                 f"avg ${sold_data.get('avg_sold_price', '?')} — "
-                f"GMV ${sold_data.get('total_gmv', '?')}. "
-                f"Factor this demand signal into your market opportunity score."
+                f"GMV ${sold_data.get('total_gmv', '?')}"
             )
 
         prompt = (
-            f"Products to score:\n{json.dumps(product_list, indent=2)}"
-            f"{thingiverse_context}"
+            f"eBay listings (market demand):\n{json.dumps(ebay_list, indent=2)}\n\n"
+            f"Thingiverse models (print feasibility):\n{json.dumps(tv_list, indent=2)}"
             f"{sold_context}\n\n"
-            "Return the JSON array of scores as specified."
+            "Identify and return the top recreation opportunities, highest score first."
         )
 
         resp = self._call_ollama(
             [
-                {"role": "system", "content": _SCORER_PROMPT},
+                {"role": "system", "content": _CROSS_REF_PROMPT},
                 {"role": "user",   "content": prompt},
             ],
             use_tools=False,
         )
-        content = (resp or {}).get("message", {}).get("content", "")
-        raw     = _extract_json_array(content)
+        content      = (resp or {}).get("message", {}).get("content", "")
+        opportunities = _extract_json_array(content)
 
-        result: dict[int, dict] = {}
-        for entry in raw:
-            idx = entry.get("index")
-            if isinstance(idx, int):
-                result[idx] = entry
+        result: list[dict] = []
+        covered_ebay: set[int] = set()
 
-        # Fallback: rule-based score for any items the LLM missed
-        for i, item in enumerate(items):
-            if (i + 1) not in result:
-                result[i + 1] = _rule_score(item)
+        for opp in opportunities:
+            if not isinstance(opp, dict):
+                continue
+            # Resolve eBay listing reference
+            ebay_idxs = [i - 1 for i in (opp.get("ebay_indices") or []) if isinstance(i, int)]
+            ebay_item = ebay_items[ebay_idxs[0]] if ebay_idxs and ebay_idxs[0] < len(ebay_items) else {}
+            for idx in ebay_idxs:
+                covered_ebay.add(idx)
+
+            # Resolve Thingiverse model reference
+            tv_idxs = [i - 1 for i in (opp.get("thingiverse_indices") or []) if isinstance(i, int)]
+            tv_item = thingiverse_things[tv_idxs[0]] if tv_idxs and tv_idxs[0] < len(thingiverse_things) else {}
+
+            result.append({
+                **ebay_item,
+                "opportunity":        opp.get("opportunity", ebay_item.get("title", "")[:60]),
+                "recreation_score":   int(opp.get("score", 5)),
+                "recreation_tier":    opp.get("tier", "medium"),
+                "recreation_reasons": opp.get("reasons", []),
+                "meshy_prompt":       opp.get("meshy_prompt", ""),
+                "redesign_ideas":     opp.get("redesign_ideas", ""),
+                "tv_name":            tv_item.get("name", ""),
+                "tv_url":             tv_item.get("url", ""),
+                "tv_thumbnail":       tv_item.get("thumbnail", ""),
+                "tv_likes":           tv_item.get("likes", 0),
+                "tv_downloads":       tv_item.get("downloads", 0),
+                "tv_makes":           tv_item.get("makes", 0),
+            })
+
+        # Fallback: add any eBay items not referenced by the LLM
+        for i, item in enumerate(ebay_items):
+            if i not in covered_ebay and len(result) < max(len(ebay_items), 8):
+                s = _rule_score(item)
+                result.append({
+                    **item,
+                    "opportunity":        item.get("title", "")[:60],
+                    "recreation_score":   s["score"],
+                    "recreation_tier":    s["tier"],
+                    "recreation_reasons": s["reasons"],
+                    "meshy_prompt":       s["meshy_prompt"],
+                    "redesign_ideas":     "",
+                    "tv_name": "", "tv_url": "", "tv_thumbnail": "",
+                    "tv_likes": 0, "tv_downloads": 0, "tv_makes": 0,
+                })
 
         return result
 

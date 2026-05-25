@@ -1390,19 +1390,37 @@
   }
 
   function productCardHtml(p, rank) {
-    const score = p.recreation_score ?? 0;
-    const tier  = (p.recreation_tier || (score >= 7 ? 'high' : score >= 4 ? 'medium' : 'low')).toLowerCase();
-    const pct   = Math.round(score / 10 * 100);
-    const pid   = 'mp_' + rank + '_' + Math.random().toString(36).slice(2, 7);
+    const score  = p.recreation_score ?? 0;
+    const tier   = (p.recreation_tier || (score >= 7 ? 'high' : score >= 4 ? 'medium' : 'low')).toLowerCase();
+    const pct    = Math.round(score / 10 * 100);
+    const pid    = 'mp_' + rank + '_' + Math.random().toString(36).slice(2, 7);
     const imgSrc = esc(p.image_url || '');
     const imgHtml = imgSrc
-      ? `<img class="product-img" src="${imgSrc}" alt="${esc(p.title)}" loading="lazy"
+      ? `<img class="product-img" src="${imgSrc}" alt="${esc(p.opportunity || p.title)}" loading="lazy"
              onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">`
       : '';
     const placeholderDisplay = imgSrc ? 'display:none' : '';
-    const meshy   = p.meshy_prompt || '';
-    const redesign = (p.redesign_ideas || []).join(' · ');
+    const meshy    = p.meshy_prompt || '';
+    const redesign = typeof p.redesign_ideas === 'string' ? p.redesign_ideas : (p.redesign_ideas || []).join(' · ');
     const ebayUrl  = esc(p.url || '');
+
+    // Thingiverse evidence block
+    const tvHtml = p.tv_name ? `
+      <div style="border-top:1px solid var(--border);padding-top:8px;display:flex;align-items:center;gap:8px;margin-top:4px">
+        ${p.tv_thumbnail
+          ? `<img src="${esc(p.tv_thumbnail)}" style="width:34px;height:34px;object-fit:cover;border-radius:3px;flex-shrink:0" loading="lazy">`
+          : `<span style="font-size:1.4em;flex-shrink:0">🖨</span>`}
+        <div style="flex:1;min-width:0">
+          <a href="${esc(p.tv_url || '#')}" target="_blank" rel="noopener"
+             style="font-size:.68em;color:var(--success);text-decoration:none;display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis"
+             title="${esc(p.tv_name)}">${esc(p.tv_name.slice(0, 38))}</a>
+          <div style="font-size:.62em;color:var(--text-muted);display:flex;gap:8px;margin-top:1px">
+            ${p.tv_downloads > 0 ? `<span title="Downloads">⬇ ${p.tv_downloads.toLocaleString()}</span>` : ''}
+            ${p.tv_likes     > 0 ? `<span title="Likes">♥ ${p.tv_likes.toLocaleString()}</span>` : ''}
+            ${p.tv_makes     > 0 ? `<span title="Makes">🖨 ${p.tv_makes}</span>` : ''}
+          </div>
+        </div>
+      </div>` : '';
 
     return `<div class="product-card tier-${tier}">
       <div class="product-img-wrap">
@@ -1411,7 +1429,10 @@
         <div class="rank-badge">#${rank}</div>
       </div>
       <div class="product-body">
-        <div class="product-title">${esc(p.title || 'Unknown Product')}</div>
+        ${p.opportunity && p.opportunity !== p.title
+          ? `<div style="font-family:var(--display);font-size:.7em;color:var(--accent);letter-spacing:.06em;font-weight:700;margin-bottom:2px">${esc(p.opportunity)}</div>`
+          : ''}
+        <div class="product-title">${esc(p.title || p.opportunity || 'Unknown Product')}</div>
         <div class="product-meta">
           <span class="product-price">${esc(p.price || '—')}</span>
           ${p.condition ? `<span class="product-condition">${esc(p.condition)}</span>` : ''}
@@ -1429,9 +1450,11 @@
           <div class="meshy-prompt" id="${pid}">${esc(meshy)}</div>
         </div>` : ''}
         ${redesign ? `<div class="redesign-text">${esc(redesign)}</div>` : ''}
+        ${tvHtml}
         <div class="product-actions">
-          ${ebayUrl ? `<a class="prod-btn" href="${ebayUrl}" target="_blank" rel="noopener">🔗 VIEW ON EBAY</a>` : ''}
-          ${meshy   ? `<button class="prod-btn" onclick="copyPrompt('${pid}', this)">⊕ COPY PROMPT</button>` : ''}
+          ${ebayUrl ? `<a class="prod-btn" href="${ebayUrl}" target="_blank" rel="noopener">🔗 EBAY</a>` : ''}
+          ${p.tv_url ? `<a class="prod-btn" href="${esc(p.tv_url)}" target="_blank" rel="noopener" style="color:var(--success);border-color:rgba(6,214,160,.3)">🖨 THINGIVERSE</a>` : ''}
+          ${meshy    ? `<button class="prod-btn" onclick="copyPrompt('${pid}', this)">⊕ COPY PROMPT</button>` : ''}
         </div>
       </div>
     </div>`;
