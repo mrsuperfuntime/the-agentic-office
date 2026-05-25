@@ -161,40 +161,82 @@ class ResearchAgent:
     def research_and_rank(self, query: str, limit: int = 12, timeframe_days: int = 30) -> dict:
         """
         Full product research pipeline:
-          1. eBay active listings (images, prices, categories)
-          2. Thingiverse models (likes, downloads, makes — demand signal)
-          3. Real eBay sold data via Finding API (sold count, avg price, GMV)
-          4. LLM batch recreation scoring with Meshy AI prompts
-          5. Ranked product cards + summary
+          1. LLM expands query into 3 focused eBay search terms
+          2. Multi-term eBay search — deduped results across all terms
+          3. Thingiverse search — multiple angles on the topic
+          4. Real eBay sold data via Finding API
+          5. LLM batch recreation scoring with Meshy AI prompts
+          6. Ranked product cards + summary
         """
         started_at   = datetime.now(timezone.utc).isoformat()
         search_query = _extract_search_query(query)
         if search_query != query:
-            logger.info("Query cleaned: %r → %r", query, search_query)
+            logger.info("Query cleaned: %r -> %r", query, search_query)
 
-        # Step 1: eBay active listings (use cleaned keyword query)
-        ebay_result = self.tools.ebay_search(search_query, limit=limit)
-        items       = ebay_result.get("items", [])
-        ebay_error  = ebay_result.get("error")
-        if ebay_error:
-            logger.warning("eBay search error for %r: %s", search_query, ebay_error)
+        # Step 1: Expand into specific product search terms
+        search_terms = self._expand_product_queries(search_query)
+        logger.info("eBay search terms: %s", search_terms)
 
-        # Step 2: Thingiverse models
-        thingiverse_result = self.tools.thingiverse_search(search_query, limit=8, sort="popular")
-        thingiverse_things = thingiverse_result.get("things", [])
-        thingiverse_error  = thingiverse_result.get("error")
-        if thingiverse_error:
-            logger.info("Thingiverse: %s", thingiverse_error)
+        # Step 2: eBay active listings — search each term, dedupe by item_id
+        all_items:  list[dict] = []
+        seen_ids:   set[str]   = set()
+        ebay_error: str | None = None
+        all_price_ranges: list[dict] = []
+        total_ebay_results = 0
 
-        # Step 3: Real eBay sold data (Finding API, same cleaned query)
-        sold_data: dict = {}
+        per_term_limit = max(6, limit // len(search_terms) + 2)
+        for term in search_terms:
+            result = self.tools.ebay_search(term, limit=per_term_limit)
+            if result.get("error"):
+                ebay_error = result["error"]
+                logger.warning("eBay error for %r: %s", term, ebay_error)
+                break
+            for item in result.get("items", []):
+                iid = item.get("item_id", "")
+                if iid and iid not in seen_ids:
+                    seen_ids.add(iid)
+                    all_items.append(item)
+            if result.get("price_range"):
+                all_price_ranges.append(result["price_range"])
+            total_ebay_results += result.get("total_results", 0)
+
+        items = all_items[:limit]
+
+        # Merged price range across all search terms
+        price_range: dict = {}
+        if all_price_ranges:
+            all_vals = [float(pr["min"]) for pr in all_price_ranges if pr.get("min")]
+            all_vals += [float(pr["max"]) for pr in all_price_ranges if pr.get("max")]
+            all_avgs  = [float(pr["avg"]) for pr in all_price_ranges if pr.get("avg")]
+            if all_vals:
+                cur = all_price_ranges[0].get("currency", "USD")
+                price_range = {
+                    "min":      f"{min(all_vals):.2f}",
+                    "max":      f"{max(all_vals):.2f}",
+                    "avg":      f"{sum(all_avgs)/len(all_avgs):.2f}" if all_avgs else "?",
+                    "currency": cur,
+                }
+
+        # Step 3: Thingiverse — search primary term + one category-specific term
+        tv_terms = [search_query, search_terms[-1]] if len(search_terms) > 1 else [search_query]
+        thingiverse_things: list[dict] = []
+        thingiverse_error:  str | None = None
+        tv_seen: set = set()
+        for tv_term in tv_terms:
+            tv_result = self.tools.thingiverse_search(tv_term, limit=6, sort="popular")
+            if tv_result.get("error"):
+                thingiverse_error = tv_result["error"]
+                logger.info("Thingiverse error for %r: %s", tv_term, thingiverse_error)
+                break
+            for t in tv_result.get("things", []):
+                tid = t.get("id")
+                if tid and tid not in tv_seen:
+                    tv_seen.add(tid)
+                    thingiverse_things.append(t)
+        thingiverse_things.sort(key=lambda t: t.get("likes", 0), reverse=True)
+
+        # Step 4: Real eBay sold data (Finding API on primary term)
         sold_data = self.tools.ebay_sold_data(search_query, timeframe_days=timeframe_days)
-
-        # Step 4: Web context
-        web_context = self.tools.web_search(
-            f"{query} popular 3D print figurine market demand 2025",
-            num_results=4,
-        )
 
         # Step 5: Score each product for recreation potential
         scored_items: list[dict] = []
@@ -213,24 +255,25 @@ class ResearchAgent:
 
         scored_items.sort(key=lambda x: x.get("recreation_score", 0), reverse=True)
 
-        # Step 6: LLM summary with real metrics
+        # Step 6: LLM summary
         summary = self._generate_product_summary(
             query, scored_items, sold_data, thingiverse_things, timeframe_days,
             ebay_error=ebay_error, search_query=search_query,
+            search_terms=search_terms,
         )
 
         return {
             "query":             query,
             "search_query":      search_query,
+            "search_terms":      search_terms,
             "timeframe_days":    timeframe_days,
             "summary":           summary,
             "ranked_products":   scored_items,
-            "total_results":     ebay_result.get("total_results", len(items)),
-            "price_range":       ebay_result.get("price_range", {}),
+            "total_results":     total_ebay_results,
+            "price_range":       price_range,
             "demand_data":       sold_data,
             "thingiverse":       thingiverse_things,
-            "thingiverse_total": thingiverse_result.get("total", 0),
-            "web_context":       web_context,
+            "thingiverse_total": len(thingiverse_things),
             "ebay_error":        ebay_error,
             "started_at":        started_at,
             "completed_at":      datetime.now(timezone.utc).isoformat(),
@@ -238,6 +281,52 @@ class ResearchAgent:
 
     async def research_and_rank_async(self, query: str, limit: int = 12, timeframe_days: int = 30) -> dict:
         return await asyncio.to_thread(self.research_and_rank, query, limit, timeframe_days)
+
+    # ── Query expansion ───────────────────────────────────────────────────────
+
+    def _expand_product_queries(self, query: str, n: int = 3) -> list[str]:
+        """Ask the LLM to generate n focused eBay search terms from a broad query."""
+        resp = self._call_ollama(
+            [
+                {
+                    "role": "system",
+                    "content": (
+                        "You generate specific eBay product search keywords. "
+                        "Return ONLY a valid JSON array of strings — no explanation, no markdown."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        f"Generate {n} specific eBay search terms for the topic: '{query}'\n"
+                        f"Focus on physical collectibles, figures, replicas, props, and toys "
+                        f"that could be 3D printed or recreated with Meshy AI.\n"
+                        f"Example for 'star wars': [\"star wars action figure\", \"star wars helmet replica\", \"star wars funko pop\"]\n"
+                        f"Return JSON array only."
+                    ),
+                },
+            ],
+            use_tools=False,
+        )
+        content = (resp or {}).get("message", {}).get("content", "")
+        # Try direct parse
+        try:
+            terms = json.loads(content.strip())
+            if isinstance(terms, list):
+                clean = [str(t).strip() for t in terms if str(t).strip()]
+                if clean:
+                    return clean[:n]
+        except Exception:
+            pass
+        # Fall back to extracting the first JSON array found
+        arr = _extract_json_array(content)
+        if arr:
+            clean = [str(t).strip() for t in arr if str(t).strip()]
+            if clean:
+                return clean[:n]
+        # Last resort: just use the original query
+        logger.warning("Query expansion failed for %r, using original", query)
+        return [query]
 
     # ── Recreation scoring ────────────────────────────────────────────────────
 
@@ -330,6 +419,7 @@ class ResearchAgent:
         timeframe_days: int = 30,
         ebay_error: str | None = None,
         search_query: str | None = None,
+        search_terms: list[str] | None = None,
     ) -> str:
         if not products:
             sq = search_query or query
@@ -344,12 +434,16 @@ class ResearchAgent:
                 f"Try a more specific product name (e.g. 'mandalorian figure' instead of a full sentence)."
             )
 
-        top3 = products[:3]
+        top5 = products[:5]
         top_titles = "\n".join(
             f"  {i+1}. {p['title'][:80]} — Score {p['recreation_score']}/10 — {p['price']}"
-            for i, p in enumerate(top3)
+            for i, p in enumerate(top5)
         )
         demand = sold_data.get("demand_level", "unknown")
+
+        terms_note = ""
+        if search_terms and len(search_terms) > 1:
+            terms_note = f"\nSearched eBay for: {', '.join(search_terms)}"
 
         sold_note = ""
         sold_count = sold_data.get("sold_count", 0)
@@ -358,30 +452,31 @@ class ResearchAgent:
                 f"\neBay sold data (last {timeframe_days} days): "
                 f"{sold_count} units sold — "
                 f"avg ${sold_data.get('avg_sold_price', '?')} — "
-                f"GMV ${sold_data.get('total_gmv', '?')} {sold_data.get('currency', 'USD')}"
+                f"total GMV ${sold_data.get('total_gmv', '?')} {sold_data.get('currency', 'USD')}"
             )
-        elif sold_data.get("total_in_timeframe", 0) == 0:
-            sold_note = f"\neBay sold data: no completed sales found in the last {timeframe_days} days"
+        else:
+            sold_note = f"\neBay sold data: no completed sales found in last {timeframe_days} days"
 
         tv_note = ""
         if thingiverse_things:
-            top_tv = thingiverse_things[:3]
-            tv_note = "\nTop Thingiverse models:\n" + "\n".join(
-                f"  • {t.get('name','')[:60]} — {t.get('likes', 0)} likes, "
-                f"{t.get('downloads', 0):,} downloads, {t.get('makes', 0)} makes"
-                for t in top_tv
+            tv_note = "\nThingiverse models found:\n" + "\n".join(
+                f"  • {t.get('name','')[:60]} — "
+                f"{t.get('likes', 0):,} likes, {t.get('downloads', 0):,} downloads, {t.get('makes', 0)} makes"
+                for t in thingiverse_things[:5]
             )
+        else:
+            tv_note = "\nThingiverse: no models found for this query"
 
         prompt = (
-            f"You are THE RESEARCHER. Write a concise 3-paragraph market analysis for:\n"
-            f"Query: {query}\n"
-            f"Market demand: {demand}"
-            f"{sold_note}\n"
-            f"Top recreation candidates:\n{top_titles}"
+            f"You are THE RESEARCHER. Write a concise 3-paragraph market analysis for: '{query}'"
+            f"{terms_note}\n"
+            f"Market demand: {demand}{sold_note}\n"
+            f"Top recreation candidates:\n{top_titles}\n"
             f"{tv_note}\n\n"
-            f"Cover: (1) market overview with real sales numbers, "
-            f"(2) Thingiverse evidence and download/like counts for feasibility, "
-            f"(3) recommended Meshy AI approach. Be direct, use the actual numbers provided."
+            f"Cover: (1) market size and demand using real sold numbers, "
+            f"(2) Thingiverse evidence with specific like/download counts for recreation feasibility, "
+            f"(3) top 2-3 specific recommendations for Meshy AI recreation. "
+            f"Be direct and use the actual numbers provided."
         )
         resp = self._call_ollama(
             [{"role": "user", "content": prompt}],
