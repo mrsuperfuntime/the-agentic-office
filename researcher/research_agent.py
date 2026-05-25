@@ -412,8 +412,9 @@ class ResearchAgent:
             )
         things = things[:limit]
 
-        # Generate vision-based Meshy AI prompts from thumbnails (skipped if VISION_MODEL unset)
-        things = self._batch_describe_images(things)
+        # Generate Meshy AI prompts: LLM text prompt for every model,
+        # optionally upgraded with vision if VISION_MODEL is set in .env
+        things = self._batch_generate_meshy_prompts(things)
 
         # eBay market reference — what does this category sell for?
         ebay_ref    = self.tools.ebay_search(search_query, limit=5)
@@ -625,7 +626,101 @@ class ResearchAgent:
         logger.warning("3D model query expansion produced no valid terms for %r, using suffix fallback", query)
         return _tv_suffix_fallback(query, n)
 
-    # ── Vision-based Meshy AI prompt generation ───────────────────────────────
+    # ── Meshy AI prompt generation ────────────────────────────────────────────
+
+    def _text_meshy_prompt(self, name: str, tags: list[str], creator: str = "") -> str:
+        """
+        Use the text LLM to write a proper Meshy AI prompt from model name + tags.
+        Always runs — no vision model required. Vision can then improve on this.
+        """
+        tag_str = ", ".join(tags[:8]) if tags else ""
+        by_str  = f" by {creator}" if creator else ""
+        resp = self._call_ollama(
+            [
+                {
+                    "role": "system",
+                    "content": (
+                        "You write Meshy AI text-to-3D generation prompts. "
+                        "A good Meshy prompt is 2-3 sentences that describe the object's identity, "
+                        "physical shape and geometry, surface details, and visual style. "
+                        "Be specific — name the character/object, describe key features, mention art style. "
+                        "Output only the prompt text, no preamble or explanation."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        f"Write a Meshy AI text-to-3D prompt for this 3D printable model:\n"
+                        f"Name: {name}{by_str}\n"
+                        f"Tags: {tag_str or 'none'}\n\n"
+                        f"Good examples:\n"
+                        f"  Batman bust → \"Batman bust sculpture, dark knight with iconic pointed bat-eared cowl, stern chiseled jaw, detailed armor texture on the cowl surface, dramatic comic-book style, museum display quality, high polygon detail.\"\n"
+                        f"  Mandalorian helmet → \"Mandalorian warrior helmet, beskar steel full-face visor with T-shaped visor slit, battle-worn scratched metal surface, Star Wars universe, realistic sci-fi prop quality, highly detailed.\"\n"
+                        f"  Pikachu figure → \"Pikachu standing figure, round yellow body with red cheek circles, pointed ears with black tips, happy expression, smooth cartoon-style surface, Pokemon character, collectible figurine scale.\"\n\n"
+                        f"Write the prompt for '{name}':"
+                    ),
+                },
+            ],
+            use_tools=False,
+        )
+        result = (resp or {}).get("message", {}).get("content", "").strip()
+        # Strip any accidental preamble the LLM adds
+        for prefix in ("here is", "here's", "prompt:", "meshy prompt:"):
+            if result.lower().startswith(prefix):
+                result = result[len(prefix):].lstrip(' :"')
+        return result if len(result) > 20 else ""
+
+    def _batch_generate_meshy_prompts(self, things: list[dict], max_workers: int = 4) -> list[dict]:
+        """Generate LLM-written Meshy prompts for all things concurrently, then optionally
+        upgrade with vision descriptions if VISION_MODEL is configured."""
+        if not things:
+            return things
+
+        # Step 1: text-based prompts for every model (fast, always runs)
+        logger.info("Generating text-based Meshy prompts for %d models", len(things))
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            futures = {
+                pool.submit(
+                    self._text_meshy_prompt,
+                    t.get("name", ""),
+                    t.get("tags", []),
+                    t.get("creator", ""),
+                ): i
+                for i, t in enumerate(things)
+            }
+            for future in as_completed(futures):
+                idx = futures[future]
+                try:
+                    prompt = future.result()
+                    if prompt:
+                        things[idx]["meshy_prompt"] = prompt
+                except Exception as e:
+                    logger.warning("Text prompt worker error at index %d: %s", idx, e)
+
+        # Step 2: vision upgrade (only if VISION_MODEL is configured)
+        vision_model = os.getenv("VISION_MODEL", "").strip()
+        if vision_model:
+            logger.info("Upgrading Meshy prompts with vision model %s", vision_model)
+            with ThreadPoolExecutor(max_workers=3) as pool:
+                futures = {
+                    pool.submit(
+                        self._describe_image_for_meshy,
+                        t.get("thumbnail", ""),
+                        t.get("name", ""),
+                    ): i
+                    for i, t in enumerate(things)
+                    if t.get("thumbnail")
+                }
+                for future in as_completed(futures):
+                    idx = futures[future]
+                    try:
+                        prompt = future.result()
+                        if prompt:
+                            things[idx]["meshy_prompt"] = prompt
+                    except Exception as e:
+                        logger.warning("Vision worker error at index %d: %s", idx, e)
+
+        return things
 
     def _describe_image_for_meshy(self, image_url: str, name: str = "") -> str:
         """
@@ -669,28 +764,6 @@ class ResearchAgent:
         except Exception as e:
             logger.warning("Vision description failed for %s: %s", image_url, e)
         return ""
-
-    def _batch_describe_images(self, things: list[dict], max_workers: int = 3) -> list[dict]:
-        """Generate Meshy prompts for all things that have a thumbnail, concurrently."""
-        vision_model = os.getenv("VISION_MODEL", "").strip()
-        if not vision_model:
-            return things
-        logger.info("Generating vision-based Meshy prompts for %d models (model=%s)", len(things), vision_model)
-        with ThreadPoolExecutor(max_workers=max_workers) as pool:
-            futures = {
-                pool.submit(self._describe_image_for_meshy, t.get("thumbnail", ""), t.get("name", "")): i
-                for i, t in enumerate(things)
-                if t.get("thumbnail")
-            }
-            for future in as_completed(futures):
-                idx = futures[future]
-                try:
-                    prompt = future.result()
-                    if prompt:
-                        things[idx]["meshy_prompt"] = prompt
-                except Exception as e:
-                    logger.warning("Vision worker error at index %d: %s", idx, e)
-        return things
 
     # ── Cross-platform opportunity scoring ───────────────────────────────────
 

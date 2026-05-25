@@ -1702,9 +1702,7 @@
     const pid   = `mp3d_${rank}`;
     // Use vision-generated prompt if available; otherwise build a descriptive fallback
     // from name + tags so the GENERATE 3D button always works.
-    const tagWords  = (t.tags || []).slice(0, 5).join(', ');
-    const meshyFallback = `3D printable model: ${t.name || 'object'}${tagWords ? `, featuring ${tagWords}` : ''}. Detailed surface, physically accurate proportions, suitable for FDM printing.`;
-    const meshy = t.meshy_prompt || meshyFallback;
+    const meshy = t.meshy_prompt || t.name || 'untitled 3D model';
     const tags  = (t.tags || []).slice(0, 4).map(tag =>
       `<span class="model-tag">${esc(tag)}</span>`
     ).join('');
